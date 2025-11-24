@@ -48,7 +48,7 @@ app.use(compression({
 // Optimized rate limiting for free tier
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 2000 : 10000, // Increased for high concurrency
+  max: process.env.NODE_ENV === 'production' ? 2000 : 10000,
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later.',
@@ -142,8 +142,12 @@ app.use((error, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
-    message: 'API endpoint not found'
+    message: 'API endpoint not found',
+    path: req.path
   });
 });
 
-export default app;
+// Export handler for Vercel serverless functions
+export default (req, res) => {
+  return app(req, res);
+};
