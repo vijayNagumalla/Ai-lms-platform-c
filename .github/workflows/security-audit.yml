@@ -1,0 +1,61 @@
+# MEDIUM PRIORITY FIX: Dependency vulnerability scanning with npm audit
+# This workflow runs on push and pull requests to check for security vulnerabilities
+
+name: Security Audit
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run weekly on Mondays at 9 AM UTC
+    - cron: '0 9 * * 1'
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        package-manager: [npm]
+        working-directory:
+          - backend
+          - .
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: ${{ matrix.package-manager }}
+          cache-dependency-path: ${{ matrix.working-directory }}/package.json
+      
+      - name: Install dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci
+      
+      - name: Run npm audit
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          echo "Running npm audit for ${{ matrix.working-directory }}"
+          npm audit --audit-level=moderate || true
+      
+      - name: Run npm audit fix (dry-run)
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          echo "Checking for auto-fixable vulnerabilities"
+          npm audit fix --dry-run || true
+      
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-results-${{ matrix.working-directory }}
+          path: |
+            ${{ matrix.working-directory }}/npm-audit.json
+          retention-days: 7
+
