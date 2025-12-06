@@ -271,6 +271,11 @@ app.use((error, req, res, next) => {
   console.error('Request path:', req.path);
   console.error('Request method:', req.method);
   
+  // Ensure JSON response
+  if (!res.headersSent) {
+    res.setHeader('Content-Type', 'application/json');
+  }
+  
   // Check if it's a missing env var error
   if (missingEnvVars.length > 0 && !res.headersSent) {
     return res.status(500).json({ 
@@ -294,6 +299,7 @@ app.use((error, req, res, next) => {
 
 // 404 handler
 app.use('*', (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
   res.status(404).json({
     success: false,
     message: 'API endpoint not found',

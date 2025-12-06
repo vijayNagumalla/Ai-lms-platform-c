@@ -69,12 +69,29 @@ const LandingPage = () => {
       try {
         const baseUrl = getApiBaseUrl();
         const response = await fetch(`${baseUrl}/analytics/public-stats`);
+        
+        // Check if response is OK and is JSON
+        if (!response.ok) {
+          console.warn('Stats endpoint returned non-OK status:', response.status);
+          // Use default stats (already set to 0)
+          return;
+        }
+        
+        // Check content-type before parsing
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          console.warn('Stats endpoint returned non-JSON response:', contentType);
+          // Use default stats (already set to 0)
+          return;
+        }
+        
         const data = await response.json();
-        if (data.success) {
+        if (data && data.success && data.data) {
           setStats(data.data);
         }
       } catch (error) {
         console.error('Failed to fetch stats:', error);
+        // Silently fail and use default stats (already set to 0)
       }
     };
 

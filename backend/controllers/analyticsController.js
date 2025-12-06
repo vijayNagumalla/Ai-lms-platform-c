@@ -1679,26 +1679,51 @@ export const getAssessmentStudentSubmissions = async (req, res) => {
 // Get public stats for landing page
 export const getPublicStats = async (req, res) => {
   try {
+    // Ensure JSON response header is set
+    res.setHeader('Content-Type', 'application/json');
+    
+    const stats = await getPlatformStatsSnapshot();
+    
+    // Ensure we have valid stats object
+    if (!stats || typeof stats !== 'object') {
+      throw new Error('Invalid stats returned from getPlatformStatsSnapshot');
+    }
+    
     const {
-      activeUsers,
-      totalColleges,
-      totalAssessments,
-      totalSubmissions
-    } = await getPlatformStatsSnapshot();
+      activeUsers = 0,
+      totalColleges = 0,
+      totalAssessments = 0,
+      totalSubmissions = 0
+    } = stats;
+    
     res.json({
       success: true,
       data: {
-        activeUsers,
-        institutions: totalColleges,
-        assessments: totalAssessments,
-        submissions: totalSubmissions
+        activeUsers: Number(activeUsers) || 0,
+        institutions: Number(totalColleges) || 0,
+        assessments: Number(totalAssessments) || 0,
+        submissions: Number(totalSubmissions) || 0
       }
     });
   } catch (error) {
     console.error('Public stats error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get public stats'
+    console.error('Error stack:', error.stack);
+    
+    // Ensure JSON response header is set even on error
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'application/json');
+    }
+    
+    // Return default values instead of error for public endpoint
+    // This ensures the landing page still loads even if stats fail
+    res.json({
+      success: true,
+      data: {
+        activeUsers: 0,
+        institutions: 0,
+        assessments: 0,
+        submissions: 0
+      }
     });
   }
 };

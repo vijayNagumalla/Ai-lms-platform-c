@@ -30,7 +30,29 @@ const router = express.Router();
 
 // Test connection (no authentication required)
 router.get('/test', testAnalyticsConnection);
-router.get('/public-stats', getPublicStats);
+
+// Public stats endpoint with error handling to ensure JSON response
+router.get('/public-stats', async (req, res) => {
+  try {
+    // Ensure response is always JSON
+    res.setHeader('Content-Type', 'application/json');
+    await getPublicStats(req, res);
+  } catch (error) {
+    console.error('Error in public-stats route:', error);
+    // Ensure we return JSON even if handler fails
+    if (!res.headersSent) {
+      res.status(200).json({
+        success: true,
+        data: {
+          activeUsers: 0,
+          institutions: 0,
+          assessments: 0,
+          submissions: 0
+        }
+      });
+    }
+  }
+});
 
 
 // Apply authentication middleware to all other routes
