@@ -264,10 +264,12 @@ async function loadRoutes() {
 // Load routes asynchronously
 loadRoutes();
 
-// Error handling middleware
+// Error handling middleware - must be after all routes
 app.use((error, req, res, next) => {
-  console.error('Error:', error);
-  console.error('Stack:', error.stack);
+  console.error('Express error handler:', error);
+  console.error('Error stack:', error.stack);
+  console.error('Request path:', req.path);
+  console.error('Request method:', req.method);
   
   // Check if it's a missing env var error
   if (missingEnvVars.length > 0 && !res.headersSent) {
@@ -284,7 +286,8 @@ app.use((error, req, res, next) => {
     res.status(500).json({ 
       success: false, 
       message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      path: req.path
     });
   }
 });
@@ -300,21 +303,38 @@ app.use('*', (req, res) => {
 
 // Export handler for Vercel serverless functions
 export default async (req, res) => {
-  // Ensure routes are loaded before handling request
-  if (!routesLoaded) {
-    await loadRoutes();
+  try {
+    // Ensure routes are loaded before handling request
+    if (!routesLoaded) {
+      await loadRoutes();
+    }
+    
+    // If critical env vars are missing, return helpful error
+    if (missingEnvVars.length > 0 && !req.path.startsWith('/health')) {
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error',
+        error: 'Missing required environment variables',
+        missingEnvVars: missingEnvVars,
+        hint: 'Please configure all required environment variables in Vercel project settings. See VERCEL_ENV_SETUP.md for details.'
+      });
+    }
+    
+    // Handle the request with Express app
+    return app(req, res);
+  } catch (error) {
+    // Catch any unhandled errors and return proper JSON response
+    console.error('Unhandled error in serverless function:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Make sure we haven't already sent a response
+    if (!res.headersSent) {
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred',
+        missingEnvVars: missingEnvVars.length > 0 ? missingEnvVars : undefined
+      });
+    }
   }
-  
-  // If critical env vars are missing, return helpful error
-  if (missingEnvVars.length > 0 && !req.path.startsWith('/health')) {
-    return res.status(500).json({
-      success: false,
-      message: 'Server configuration error',
-      error: 'Missing required environment variables',
-      missingEnvVars: missingEnvVars,
-      hint: 'Please configure all required environment variables in Vercel project settings. See VERCEL_ENV_SETUP.md for details.'
-    });
-  }
-  
-  return app(req, res);
 };
