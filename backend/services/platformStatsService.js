@@ -1,17 +1,15 @@
 import { pool } from '../config/database.js';
+import { supabase } from '../config/database.js';
 
 /**
  * Fetches the key platform-wide stats that power the Super Admin dashboard
  * and the public landing page hero counters.
+ * Uses direct Supabase queries for better reliability in production.
  */
 export const getPlatformStatsSnapshot = async () => {
   try {
-    // Check if pool is available
-    if (!pool) {
-      throw new Error('Database pool not initialized');
-    }
-
-    // pool.execute() returns [rows, fields] format
+    // Use direct Supabase queries for better reliability
+    // This avoids SQL parsing issues with boolean values
     const [
       userResult,
       collegeResult,
@@ -19,30 +17,102 @@ export const getPlatformStatsSnapshot = async () => {
       assessmentResult,
       submissionResult,
     ] = await Promise.all([
-      pool.execute('SELECT COUNT(*) as count FROM users WHERE is_active = true').catch(() => [[{ count: 0 }], []]),
-      pool.execute('SELECT COUNT(*) as count FROM colleges WHERE is_active = true').catch(() => [[{ count: 0 }], []]),
-      pool.execute('SELECT COUNT(*) as count FROM departments WHERE is_active = true').catch(() => [[{ count: 0 }], []]),
-      pool.execute('SELECT COUNT(*) as count FROM assessments WHERE is_published = true').catch(() => [[{ count: 0 }], []]),
-      pool.execute('SELECT COUNT(*) as count FROM assessment_submissions').catch(() => [[{ count: 0 }], []]),
+      // Active users count
+      supabase
+        .from('users')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .then(({ count, error }) => {
+          if (error) {
+            console.error('Error fetching active users:', error);
+            return { count: 0 };
+          }
+          return { count: count || 0 };
+        })
+        .catch((err) => {
+          console.error('Exception fetching active users:', err);
+          return { count: 0 };
+        }),
+      
+      // Active colleges count
+      supabase
+        .from('colleges')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .then(({ count, error }) => {
+          if (error) {
+            console.error('Error fetching active colleges:', error);
+            return { count: 0 };
+          }
+          return { count: count || 0 };
+        })
+        .catch((err) => {
+          console.error('Exception fetching active colleges:', err);
+          return { count: 0 };
+        }),
+      
+      // Active departments count
+      supabase
+        .from('departments')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .then(({ count, error }) => {
+          if (error) {
+            console.error('Error fetching active departments:', error);
+            return { count: 0 };
+          }
+          return { count: count || 0 };
+        })
+        .catch((err) => {
+          console.error('Exception fetching active departments:', err);
+          return { count: 0 };
+        }),
+      
+      // Published assessments count
+      supabase
+        .from('assessments')
+        .select('*', { count: 'exact', head: true })
+        .eq('is_published', true)
+        .then(({ count, error }) => {
+          if (error) {
+            console.error('Error fetching published assessments:', error);
+            return { count: 0 };
+          }
+          return { count: count || 0 };
+        })
+        .catch((err) => {
+          console.error('Exception fetching published assessments:', err);
+          return { count: 0 };
+        }),
+      
+      // Total submissions count
+      supabase
+        .from('assessment_submissions')
+        .select('*', { count: 'exact', head: true })
+        .then(({ count, error }) => {
+          if (error) {
+            console.error('Error fetching submissions:', error);
+            return { count: 0 };
+          }
+          return { count: count || 0 };
+        })
+        .catch((err) => {
+          console.error('Exception fetching submissions:', err);
+          return { count: 0 };
+        }),
     ]);
 
-    // Extract rows from [rows, fields] format
-    const userRows = userResult?.[0] || [];
-    const collegeRows = collegeResult?.[0] || [];
-    const departmentRows = departmentResult?.[0] || [];
-    const assessmentRows = assessmentResult?.[0] || [];
-    const submissionRows = submissionResult?.[0] || [];
-
     return {
-      activeUsers: userRows?.[0]?.count ?? 0,
-      totalColleges: collegeRows?.[0]?.count ?? 0,
-      totalDepartments: departmentRows?.[0]?.count ?? 0,
-      totalAssessments: assessmentRows?.[0]?.count ?? 0,
-      totalSubmissions: submissionRows?.[0]?.count ?? 0,
+      activeUsers: userResult?.count ?? 0,
+      totalColleges: collegeResult?.count ?? 0,
+      totalDepartments: departmentResult?.count ?? 0,
+      totalAssessments: assessmentResult?.count ?? 0,
+      totalSubmissions: submissionResult?.count ?? 0,
     };
   } catch (error) {
     console.error('Error in getPlatformStatsSnapshot:', error);
     console.error('Error stack:', error.stack);
+    console.error('Error message:', error.message);
     // Return default values instead of throwing
     return {
       activeUsers: 0,

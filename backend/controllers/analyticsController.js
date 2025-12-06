@@ -1682,10 +1682,13 @@ export const getPublicStats = async (req, res) => {
     // Ensure JSON response header is set
     res.setHeader('Content-Type', 'application/json');
     
+    console.log('[PublicStats] Starting to fetch platform stats...');
     const stats = await getPlatformStatsSnapshot();
+    console.log('[PublicStats] Stats fetched:', stats);
     
     // Ensure we have valid stats object
     if (!stats || typeof stats !== 'object') {
+      console.error('[PublicStats] Invalid stats object received:', stats);
       throw new Error('Invalid stats returned from getPlatformStatsSnapshot');
     }
     
@@ -1696,7 +1699,7 @@ export const getPublicStats = async (req, res) => {
       totalSubmissions = 0
     } = stats;
     
-    res.json({
+    const responseData = {
       success: true,
       data: {
         activeUsers: Number(activeUsers) || 0,
@@ -1704,10 +1707,14 @@ export const getPublicStats = async (req, res) => {
         assessments: Number(totalAssessments) || 0,
         submissions: Number(totalSubmissions) || 0
       }
-    });
+    };
+    
+    console.log('[PublicStats] Sending response:', responseData);
+    res.json(responseData);
   } catch (error) {
-    console.error('Public stats error:', error);
-    console.error('Error stack:', error.stack);
+    console.error('[PublicStats] Error occurred:', error);
+    console.error('[PublicStats] Error message:', error.message);
+    console.error('[PublicStats] Error stack:', error.stack);
     
     // Ensure JSON response header is set even on error
     if (!res.headersSent) {
@@ -1716,7 +1723,7 @@ export const getPublicStats = async (req, res) => {
     
     // Return default values instead of error for public endpoint
     // This ensures the landing page still loads even if stats fail
-    res.json({
+    const fallbackResponse = {
       success: true,
       data: {
         activeUsers: 0,
@@ -1724,6 +1731,9 @@ export const getPublicStats = async (req, res) => {
         assessments: 0,
         submissions: 0
       }
-    });
+    };
+    
+    console.log('[PublicStats] Sending fallback response:', fallbackResponse);
+    res.json(fallbackResponse);
   }
 };
