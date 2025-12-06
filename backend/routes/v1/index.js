@@ -14,10 +14,9 @@ import superAdminRoutes from '../superAdmin.js';
 import codingProfileRoutes from '../codingProfiles.js';
 import bulkUploadRoutes from '../bulkUpload.js';
 import batchRoutes from '../batches.js';
-import enhancedFeaturesRoutes from '../enhancedFeatures.js';
 import studentAssessmentRoutes from '../studentAssessments.js';
 import notificationRoutes from '../notifications.js';
-import projectManagementRoutes from '../projectManagement.js';
+import aiRoutes from '../ai.js';
 
 const router = express.Router();
 
@@ -34,10 +33,9 @@ router.use('/super-admin', superAdminRoutes);
 router.use('/coding-profiles', codingProfileRoutes);
 router.use('/bulk-upload', bulkUploadRoutes);
 router.use('/batches', batchRoutes);
-router.use('/enhanced', enhancedFeaturesRoutes);
 router.use('/student-assessments', studentAssessmentRoutes);
 router.use('/notifications', notificationRoutes);
-router.use('/project-management', projectManagementRoutes);
+router.use('/ai', aiRoutes);
 
 export default router;
 

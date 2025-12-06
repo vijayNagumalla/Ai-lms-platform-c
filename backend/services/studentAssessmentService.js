@@ -131,10 +131,10 @@ class StudentAssessmentService {
                     MAX(CASE WHEN s.status = 'in_progress' THEN s.started_at END) as in_progress_started_at,
                     MAX(CASE WHEN s.status = 'in_progress' THEN s.answers END) as in_progress_answers,
                     MAX(CASE WHEN s.status IN ('submitted', 'graded', 'completed') THEN s.id END) as last_completed_submission_id
-                FROM assessment_templates a
+                FROM assessments a
                 LEFT JOIN colleges c ON a.college_id = c.id
                 LEFT JOIN assessment_submissions s ON a.id = s.assessment_id AND s.student_id = ?
-                WHERE a.status = 'published'
+                WHERE a.is_published = true
             `;
 
             const params = [studentId];
@@ -176,12 +176,12 @@ class StudentAssessmentService {
                 query += ` AND a.department = ?`;
                 params.push(department);
             }
-            // Note: batch filtering removed since assessment_templates doesn't have batch_id
+            // Note: batch filtering removed since assessments doesn't have batch_id
             if (college && college !== 'undefined' && college !== 'null') {
                 query += ` AND a.college_id = ?`;
                 params.push(college);
             }
-            // Note: subject filtering removed since assessment_templates doesn't have subject column
+            // Note: subject filtering removed since assessments doesn't have subject column
 
             // Ensure limit and offset are numbers
             const safeLimit = parseInt(limit) || 50;
@@ -320,7 +320,12 @@ class StudentAssessmentService {
 
             // Create submission record (detect schema and insert only existing columns)
             const submissionId = crypto.randomUUID();
-            const [columnsRows] = await connection.query('SHOW COLUMNS FROM assessment_submissions');
+            // PostgreSQL: Query information_schema instead of SHOW COLUMNS
+            const [columnsRows] = await connection.query(`
+                SELECT column_name as Field 
+                FROM information_schema.columns 
+                WHERE table_name = 'assessment_submissions'
+            `);
             const columnNames = new Set(columnsRows.map(c => c.Field));
 
             const fields = ['id', 'assessment_id', 'student_id'];
@@ -473,7 +478,7 @@ class StudentAssessmentService {
                             s.started_at
                         FROM assessment_submissions s
                         JOIN assessment_assignments aa ON s.assessment_id = aa.assessment_id
-                        JOIN assessment_templates a ON aa.assessment_id = a.id
+                        JOIN assessments a ON aa.assessment_id = a.id
                         WHERE s.id = ?
                     `, [submissionId]);
 
@@ -595,7 +600,7 @@ class StudentAssessmentService {
 
                         // Check if assessment still exists (not deleted)
                         const [assessmentExists] = await connection.query(
-                            'SELECT id, status FROM assessment_templates WHERE id = ?',
+                            'SELECT id, status FROM assessments WHERE id = ?',
                             [assessmentId]
                         );
 
@@ -763,7 +768,12 @@ class StudentAssessmentService {
 
                 // Use INSERT ... ON DUPLICATE KEY UPDATE to handle race conditions
                 // Check if is_flagged column exists
-                const [columns] = await connection.query('SHOW COLUMNS FROM student_responses');
+                // PostgreSQL: Query information_schema instead of SHOW COLUMNS
+                const [columns] = await connection.query(`
+                    SELECT column_name as Field 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'student_responses'
+                `);
                 const hasFlaggedColumn = columns.some(col => col.Field === 'is_flagged');
 
                 const insertFields = [
@@ -796,14 +806,14 @@ class StudentAssessmentService {
                         if (f === 'updated_at') {
                             return `${f} = NOW()`; // Always use current timestamp on update
                         }
-                        return `${f} = VALUES(${f})`;
+                        return `${f} = EXCLUDED.${f}`;
                     })
                     .join(', ');
 
                 await connection.query(`
                     INSERT INTO student_responses (${insertFields.join(', ')})
                     VALUES (${placeholders})
-                    ON DUPLICATE KEY UPDATE
+                    ON CONFLICT (submission_id, question_id) DO UPDATE SET
                         ${updateFields}
                 `, insertValues);
 
@@ -853,7 +863,7 @@ class StudentAssessmentService {
                     a.time_limit_minutes
                 FROM assessment_submissions s
                 JOIN assessment_assignments aa ON s.assessment_id = aa.assessment_id
-                JOIN assessment_templates a ON aa.assessment_id = a.id
+                JOIN assessments a ON aa.assessment_id = a.id
                 WHERE s.id = ?
             `, [submissionId]);
 
@@ -908,7 +918,12 @@ class StudentAssessmentService {
 
             // Update submission - Use correct column names based on schema
             // Check if columns exist to handle different schema versions
-            const [columns] = await connection.query('SHOW COLUMNS FROM assessment_submissions');
+            // PostgreSQL: Query information_schema instead of SHOW COLUMNS
+            const [columns] = await connection.query(`
+                SELECT column_name as Field 
+                FROM information_schema.columns 
+                WHERE table_name = 'assessment_submissions'
+            `);
             const columnNames = columns.map(col => col.Field);
 
             let updateFields = [];
@@ -1038,11 +1053,11 @@ class StudentAssessmentService {
                     SUM(sr.time_spent) as total_time_spent_seconds,
                     COALESCE(
                         s.time_taken_minutes,
-                        TIMESTAMPDIFF(MINUTE, s.started_at, s.submitted_at),
+                        EXTRACT(EPOCH FROM (s.submitted_at - s.started_at)) / 60,
                         FLOOR(SUM(sr.time_spent) / 60)
                     ) as time_taken_minutes
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 LEFT JOIN users u ON s.student_id = u.id
                 LEFT JOIN student_responses sr ON s.id = sr.submission_id
                 WHERE s.id = ?
@@ -1097,7 +1112,7 @@ class StudentAssessmentService {
                     d.name as department_name,
                     b.name as batch_name
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 LEFT JOIN colleges c ON a.college_id = c.id
                 LEFT JOIN departments d ON a.department_id = d.id
                 LEFT JOIN batches b ON a.batch_id = b.id
@@ -1136,7 +1151,7 @@ class StudentAssessmentService {
     async getAssessmentById(assessmentId, studentId = null) {
         const query = `
             SELECT a.*, c.name as college_name
-            FROM assessment_templates a
+            FROM assessments a
             LEFT JOIN colleges c ON a.college_id = c.id
             WHERE a.id = ?
         `;
@@ -1586,7 +1601,7 @@ class StudentAssessmentService {
         } catch (error) {
             await connection.rollback();
             // If duplicate key error, retry once
-            if (error.code === 'ER_DUP_ENTRY') {
+            if (error.code === 'ER_DUP_ENTRY' || error.code === '23505' || error.message?.includes('duplicate key') || error.message?.includes('unique constraint')) {
                 console.warn('Duplicate attempt number detected, retrying...');
                 // Retry with a small delay
                 await new Promise(resolve => setTimeout(resolve, 100));
@@ -1848,7 +1863,7 @@ class StudentAssessmentService {
             // Fallback to assessment total_points only if no questions found
             if (totalPoints === 0 || isNaN(totalPoints) || allQuestions.length === 0) {
                 const [assessment] = await connection.execute(`
-                SELECT a.total_points FROM assessment_templates a
+                SELECT a.total_points FROM assessments a
                 JOIN assessment_submissions s ON a.id = s.assessment_id
                 WHERE s.id = ?
             `, [submissionId]);

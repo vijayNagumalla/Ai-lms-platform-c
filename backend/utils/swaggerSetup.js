@@ -21,14 +21,14 @@ const swaggerOptions = {
             }
         },
         servers: [
-            {
-                url: process.env.API_URL || 'http://localhost:5000',
-                description: 'Development server'
-            },
-            {
-                url: 'https://api.lms-platform.com',
-                description: 'Production server'
-            }
+            ...(process.env.API_URL ? [{
+                url: process.env.API_URL,
+                description: process.env.NODE_ENV === 'production' ? 'Production server' : 'Development server'
+            }] : []),
+            ...(process.env.NODE_ENV !== 'production' ? [{
+                url: 'http://localhost:5000',
+                description: 'Local development server'
+            }] : [])
         ],
         components: {
             securitySchemes: {

@@ -1,6 +1,7 @@
 // Use relative path for production (Vercel), absolute for development
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
-  (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api');
+// Import from centralized config utility
+import { getApiBaseUrl } from '../utils/apiConfig';
+const API_BASE_URL = getApiBaseUrl();
 
 class ApiService {
   constructor() {
@@ -1134,78 +1135,6 @@ class ApiService {
     return this.post('/bulk-upload/sync', { autoSync: true });
   }
 
-  // Enhanced Features API endpoints
-
-  // Attendance Management
-  async getAttendanceSessions(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/attendance/sessions${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async createAttendanceSession(data) {
-    return this.post('/enhanced/attendance/sessions', data);
-  }
-
-  async markAttendance(data) {
-    return this.post('/enhanced/attendance/mark', data);
-  }
-
-  async getAttendanceRecords(sessionId) {
-    return this.get(`/enhanced/attendance/sessions/${sessionId}/records`);
-  }
-
-  // Course Management
-  async getCourses(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/courses${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async createCourse(data) {
-    return this.post('/enhanced/courses', data);
-  }
-
-  // Class Scheduling
-  async getClasses(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/classes${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getClassSchedules(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/schedules${queryString ? `?${queryString}` : ''}`);
-  }
-
-  // Faculty Status Management
-  async getFacultyStatus(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/faculty/status${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async updateFacultyStatus(data) {
-    return this.put('/enhanced/faculty/status', data);
-  }
-
-  async getFacultyAvailability(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/faculty/availability${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getFacultyWorkload(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/faculty/workload${queryString ? `?${queryString}` : ''}`);
-  }
-
-  // General
-  async getRooms(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/rooms${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getDepartments(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/enhanced/departments${queryString ? `?${queryString}` : ''}`);
-  }
-
   // Notifications
   async getNotifications(params = {}) {
     const queryString = new URLSearchParams(params).toString();
@@ -1221,226 +1150,6 @@ class ApiService {
     return this.patch('/notifications/read-all');
   }
 
-  // ============================================================
-  // PROJECT MANAGEMENT APIs
-  // ============================================================
-
-  // Projects
-  async getProjects(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/projects${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getProjectById(projectId) {
-    return this.get(`/v1/project-management/projects/${projectId}`);
-  }
-
-  async createProject(projectData) {
-    return this.post('/v1/project-management/projects', projectData);
-  }
-
-  async updateProject(projectId, projectData) {
-    return this.put(`/v1/project-management/projects/${projectId}`, projectData);
-  }
-
-  async deleteProject(projectId) {
-    return this.delete(`/v1/project-management/projects/${projectId}`);
-  }
-
-  async updateProjectStatus(projectId, status) {
-    return this.patch(`/v1/project-management/projects/${projectId}/status`, { status });
-  }
-
-  async addDepartmentsToProject(projectId, departmentIds) {
-    return this.post(`/v1/project-management/projects/${projectId}/departments`, { department_ids: departmentIds });
-  }
-
-  async addBatchesToProject(projectId, batchIds) {
-    return this.post(`/v1/project-management/projects/${projectId}/batches`, { batch_ids: batchIds });
-  }
-
-  // Faculty Allocation
-  async allocateFaculty(projectId, facultyData) {
-    return this.post(`/v1/project-management/projects/${projectId}/faculty`, facultyData);
-  }
-
-  async getProjectFaculty(projectId) {
-    return this.get(`/v1/project-management/projects/${projectId}/faculty`);
-  }
-
-  async replaceFaculty(allocationId, replacementData) {
-    return this.post(`/v1/project-management/faculty-allocations/${allocationId}/replace`, replacementData);
-  }
-
-  async getRecommendedTrainers(projectId) {
-    return this.get(`/v1/project-management/faculty/recommendations?project_id=${projectId}`);
-  }
-
-  async getFacultyProfile(facultyId) {
-    return this.get(`/v1/project-management/faculty/${facultyId}/profile`);
-  }
-
-  async updateFacultyProfile(facultyId, profileData) {
-    return this.put(`/v1/project-management/faculty/${facultyId}/profile`, profileData);
-  }
-
-  async checkFacultyAvailability(facultyId, startTime, endTime, excludeSessionId = null) {
-    const params = new URLSearchParams({ faculty_id: facultyId, start_time: startTime, end_time: endTime });
-    if (excludeSessionId) params.append('exclude_session_id', excludeSessionId);
-    return this.get(`/v1/project-management/faculty/${facultyId}/availability?${params}`);
-  }
-
-  // Sessions/Scheduling
-  async createSession(sessionData) {
-    return this.post('/v1/project-management/sessions', sessionData);
-  }
-
-  async getSessions(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/sessions${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async autoGenerateSchedule(projectId) {
-    return this.post('/v1/project-management/sessions/auto-generate', { project_id: projectId });
-  }
-
-  async checkConflicts(params) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/sessions/conflicts?${queryString}`);
-  }
-
-  async exportSessionsToExcel(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/sessions/export?${queryString}`, { responseType: 'blob' });
-  }
-
-  // Attendance
-  async markAttendance(sessionId, attendanceData) {
-    return this.post('/v1/project-management/attendance', { session_id: sessionId, attendance_data: attendanceData });
-  }
-
-  async getSessionAttendance(sessionId) {
-    return this.get(`/v1/project-management/attendance/session/${sessionId}`);
-  }
-
-  async bulkUploadAttendance(sessionId, file) {
-    const formData = new FormData();
-    formData.append('session_id', sessionId);
-    formData.append('file', file);
-    return this.post('/v1/project-management/attendance/bulk-upload', formData, { 'Content-Type': 'multipart/form-data' });
-  }
-
-  async getAttendanceReports(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/attendance/reports${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getStudentAttendanceSummary(studentId, params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/attendance/student/${studentId}/summary${queryString ? `?${queryString}` : ''}`);
-  }
-
-  // Feedback
-  async submitFeedback(feedbackData) {
-    return this.post('/v1/project-management/feedback', feedbackData);
-  }
-
-  async getFeedback(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/feedback${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getFeedbackAnalytics(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/feedback/analytics${queryString ? `?${queryString}` : ''}`);
-  }
-
-  // Topics Covered
-  async addTopicsCovered(sessionId, topics) {
-    return this.post('/v1/project-management/topics-covered', { session_id: sessionId, topics });
-  }
-
-  async getSessionTopics(sessionId) {
-    return this.get(`/v1/project-management/topics-covered/session/${sessionId}`);
-  }
-
-  async getProjectTopics(projectId) {
-    return this.get(`/v1/project-management/topics-covered/project/${projectId}`);
-  }
-
-  async updateTopicsCovered(topicId, topicData) {
-    return this.put(`/v1/project-management/topics-covered/${topicId}`, topicData);
-  }
-
-  // Invoices
-  async generateInvoice(invoiceData) {
-    return this.post('/v1/project-management/invoices/generate', invoiceData);
-  }
-
-  async getInvoices(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/invoices${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getFacultyInvoices(facultyId) {
-    return this.get(`/v1/project-management/invoices/faculty/${facultyId}`);
-  }
-
-  // Calendar
-  async getCalendarEvents(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/calendar${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getDayView(date) {
-    return this.get(`/v1/project-management/calendar/day/${date}`);
-  }
-
-  async getWeekView(date) {
-    return this.get(`/v1/project-management/calendar/week/${date}`);
-  }
-
-  async getMonthView(date) {
-    return this.get(`/v1/project-management/calendar/month/${date}`);
-  }
-
-  // Admin Allocation
-  async allocateAdmin(projectId, adminData) {
-    return this.post('/v1/project-management/admin-allocations', { project_id: projectId, ...adminData });
-  }
-
-  async getProjectAdmins(projectId) {
-    return this.get(`/v1/project-management/projects/${projectId}/admins`);
-  }
-
-  async removeAdminAllocation(allocationId) {
-    return this.delete(`/v1/project-management/admin-allocations/${allocationId}`);
-  }
-
-  async getAdminWorkload(adminId) {
-    return this.get(`/v1/project-management/admin/workload?admin_id=${adminId}`);
-  }
-
-  // Reports
-  async getProjectProgressReport(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/reports/project-progress${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getTrainerUtilizationReport(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/reports/trainer-utilization${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getCollegeAttendanceReport(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/reports/college-attendance${queryString ? `?${queryString}` : ''}`);
-  }
-
-  async getInvoiceSummaryReport(params = {}) {
-    const queryString = new URLSearchParams(params).toString();
-    return this.get(`/v1/project-management/reports/invoice-summary${queryString ? `?${queryString}` : ''}`);
-  }
 
   // Assessment Retake
   async retakeAssessment(assessmentId) {
@@ -1492,6 +1201,19 @@ class ApiService {
 
   async validateAssessmentAttempt(assessmentId) {
     return this.post('/student-assessments/validate-attempt', { assessmentId });
+  }
+
+  // Gemini AI assistant
+  async getAiConnectors() {
+    return this.get('/ai/connectors');
+  }
+
+  async fetchAiContext(connectorKey, params = {}) {
+    return this.post('/ai/context', { connectorKey, params });
+  }
+
+  async sendAiMessage(payload) {
+    return this.post('/ai/chat', payload);
   }
 }
 

@@ -26,12 +26,12 @@ class ResponseStorageService {
                 INSERT INTO student_responses 
                 (id, submission_id, question_id, answer, encrypted_answer, metadata, version, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                answer = VALUES(answer),
-                encrypted_answer = VALUES(encrypted_answer),
-                metadata = VALUES(metadata),
-                version = version + 1,
-                updated_at = VALUES(updated_at)
+                ON CONFLICT (submission_id, question_id) DO UPDATE SET
+                answer = EXCLUDED.answer,
+                encrypted_answer = EXCLUDED.encrypted_answer,
+                metadata = EXCLUDED.metadata,
+                version = student_responses.version + 1,
+                updated_at = EXCLUDED.updated_at
             `;
             
             await db.query(query, [

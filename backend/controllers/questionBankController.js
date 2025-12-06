@@ -459,7 +459,7 @@ export const getQuestionTags = async (req, res) => {
       `SELECT 
         qt.*,
         u.name as creator_name,
-        (SELECT COUNT(*) FROM questions WHERE JSON_CONTAINS(tags, CONCAT('"', qt.name, '"'))) as usage_count
+        (SELECT COUNT(*) FROM questions WHERE tags::jsonb @> CONCAT('"', qt.name, '"')::jsonb) as usage_count
       FROM question_tags qt
       LEFT JOIN users u ON qt.created_by = u.id
       ORDER BY qt.name`
@@ -1571,7 +1571,7 @@ export const getQuestionAnalytics = async (req, res) => {
         at.id,
         at.title,
         COUNT(aq.id) as usage_count
-      FROM assessment_templates at
+      FROM assessments at
       INNER JOIN assessment_questions aq ON at.id = aq.assessment_id
       WHERE aq.question_id = ?
       GROUP BY at.id`,

@@ -33,11 +33,11 @@ export function sendErrorResponse(res, errorCode, details = null, customStatusCo
 export function handleDatabaseError(res, error, requestId = null) {
   logger.logError(error, { context: 'database', requestId });
   
-  if (error.code === 'ER_DUP_ENTRY') {
+  if (error.code === 'ER_DUP_ENTRY' || error.code === '23505' || error.message?.includes('duplicate key') || error.message?.includes('unique constraint')) {
     return sendErrorResponse(res, 'RESOURCE_ALREADY_EXISTS', { requestId });
   }
   
-  if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+  if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.code === '23503' || error.message?.includes('foreign key') || error.message?.includes('violates foreign key constraint')) {
     return sendErrorResponse(res, 'VALIDATION_INVALID_INPUT', { 
       message: 'Invalid reference',
       requestId 

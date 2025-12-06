@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
+import { getPlatformStatsSnapshot } from '../services/platformStatsService.js';
 
 // Test analytics connection
 export const testAnalyticsConnection = async (req, res) => {
@@ -176,9 +177,9 @@ export const getAnalyticsData = async (req, res) => {
 
     const [summaryStats] = await pool.execute(`
       SELECT 
-        (SELECT COUNT(*) FROM assessment_templates at 
+        (SELECT COUNT(*) FROM assessments at 
          LEFT JOIN users u ON at.created_by = u.id 
-         WHERE at.status = 'published' ${roleBasedFilterForTemplates}) as totalAssessments,
+         WHERE at.is_published = true ${roleBasedFilterForTemplates}) as totalAssessments,
         (SELECT COUNT(DISTINCT sub.student_id) FROM assessment_submissions sub
          LEFT JOIN users u ON sub.student_id = u.id 
          WHERE 1=1 ${roleBasedFilterForSubmissions}) as activeStudents,
@@ -287,10 +288,10 @@ export const getAnalyticsData = async (req, res) => {
         COUNT(CASE WHEN sub.status = 'submitted' OR sub.status = 'graded' THEN 1 END) as completedAssessments,
         COUNT(sub.id) as totalSubmissions
       FROM colleges c
-      LEFT JOIN assessment_templates at ON (at.college_id = c.id OR at.college_id IS NULL) AND at.status = 'published'
+      LEFT JOIN assessments at ON (at.college_id = c.id OR at.college_id IS NULL) AND at.is_published = true
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
       LEFT JOIN users u ON sub.student_id = u.id
-      WHERE c.is_active = TRUE
+      WHERE c.is_active = true
     `;
 
     // Add filters in correct order
@@ -331,10 +332,10 @@ export const getAnalyticsData = async (req, res) => {
         COUNT(CASE WHEN sub.status = 'submitted' OR sub.status = 'graded' THEN 1 END) as completedAssessments
       FROM departments d
       LEFT JOIN colleges c ON d.college_id = c.id
-      LEFT JOIN assessment_templates at ON at.college_id = c.id AND at.status = 'published'
+      LEFT JOIN assessments at ON at.college_id = c.id AND at.is_published = true
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
       LEFT JOIN users u ON sub.student_id = u.id
-      WHERE d.is_active = TRUE
+      WHERE d.is_active = true
       ${collegeFilter}
       GROUP BY d.id, d.name, c.name
       ORDER BY averageScore DESC
@@ -367,8 +368,8 @@ export const getAnalyticsData = async (req, res) => {
       FROM users u
       LEFT JOIN colleges c ON u.college_id = c.id
       LEFT JOIN assessment_submissions sub ON sub.student_id = u.id
-      LEFT JOIN assessment_templates at ON sub.assessment_id = at.id AND at.status = 'published'
-      WHERE u.role = 'student' AND u.is_active = TRUE
+      LEFT JOIN assessments at ON sub.assessment_id = at.id AND at.is_published = true
+      WHERE u.role = 'student' AND u.is_active = true
       ${roleBasedFilterForUsers}
       GROUP BY u.id, u.name, u.email, c.name, u.department
       ORDER BY averageScore DESC
@@ -394,7 +395,12 @@ export const getAnalyticsData = async (req, res) => {
     if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
       assessmentStatsParams.push(startDate, endDate);
     } else {
-      assessmentStatsParams.push(parseInt(dateRange));
+      // Use the same calculated cutoff date that dateFilter uses
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      assessmentStatsParams.push(cutoffDateStr);
     }
 
     const [assessmentStats] = await pool.execute(`
@@ -407,10 +413,10 @@ export const getAnalyticsData = async (req, res) => {
         COALESCE(MIN(CASE WHEN ${collegeId && collegeId !== 'all' ? 'u.college_id = ?' : '1=1'} THEN sub.percentage_score END), 0) as lowestScore,
         COALESCE(MAX(CASE WHEN ${collegeId && collegeId !== 'all' ? 'u.college_id = ?' : '1=1'} THEN sub.percentage_score END), 0) as highestScore,
         COALESCE(AVG(CASE WHEN ${collegeId && collegeId !== 'all' ? 'u.college_id = ?' : '1=1'} THEN sub.time_taken_minutes END), 0) as averageTimeTaken
-      FROM assessment_templates at
+      FROM assessments at
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
       LEFT JOIN users u ON sub.student_id = u.id
-      WHERE at.status = 'published'
+      WHERE at.is_published = true
       ${dateFilter}
       GROUP BY at.id, at.title
       ORDER BY averageScore DESC
@@ -425,7 +431,12 @@ export const getAnalyticsData = async (req, res) => {
     if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
       scoreDistributionParams.push(startDate, endDate);
     } else {
-      scoreDistributionParams.push(parseInt(dateRange));
+      // Use the same calculated cutoff date that dateFilter uses
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      scoreDistributionParams.push(cutoffDateStr);
     }
 
     const [scoreDistribution] = await pool.execute(`
@@ -439,7 +450,7 @@ export const getAnalyticsData = async (req, res) => {
         END as scoreRange,
         COUNT(*) as count
       FROM assessment_submissions sub
-      LEFT JOIN assessment_templates at ON sub.assessment_id = at.id
+      LEFT JOIN assessments at ON sub.assessment_id = at.id
       LEFT JOIN users u ON sub.student_id = u.id
       WHERE sub.percentage_score IS NOT NULL
       ${collegeId && collegeId !== 'all' ? 'AND u.college_id = ?' : ''}
@@ -462,7 +473,7 @@ export const getAnalyticsData = async (req, res) => {
         COUNT(*) as submissions,
         COALESCE(AVG(sub.percentage_score), 0) as averageScore
       FROM assessment_submissions sub
-      LEFT JOIN assessment_templates at ON sub.assessment_id = at.id
+      LEFT JOIN assessments at ON sub.assessment_id = at.id
       LEFT JOIN users u ON sub.student_id = u.id
       WHERE sub.submitted_at IS NOT NULL
       ${collegeId && collegeId !== 'all' ? 'AND u.college_id = ?' : ''}
@@ -561,8 +572,13 @@ export const getCourseAnalyticsData = async (req, res) => {
       dateFilter = 'AND c.created_at BETWEEN ? AND ?';
       dateParams = [startDate, endDate];
     } else {
-      dateFilter = 'AND (c.created_at >= DATE_SUB(NOW(), INTERVAL ? DAY) OR c.created_at IS NULL)';
-      dateParams = [parseInt(dateRange)];
+      // Calculate date on application side - PostgreSQL doesn't support INTERVAL ? DAY in prepared statements
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      dateFilter = 'AND (c.created_at >= ? OR c.created_at IS NULL)';
+      dateParams = [cutoffDateStr];
     }
 
     // College filter
@@ -605,7 +621,7 @@ export const getCourseAnalyticsData = async (req, res) => {
         END as completionRate
       FROM courses c
       LEFT JOIN course_enrollments ce ON c.id = ce.course_id
-      WHERE c.is_published = TRUE
+      WHERE c.is_published = true
       ${dateFilter}
       ${collegeFilter}
       ${departmentFilter}
@@ -629,7 +645,7 @@ export const getCourseAnalyticsData = async (req, res) => {
       FROM courses c
       LEFT JOIN users u ON c.instructor_id = u.id
       LEFT JOIN course_enrollments ce ON c.id = ce.course_id
-      WHERE c.is_published = TRUE
+      WHERE c.is_published = true
       ${dateFilter}
       ${collegeFilter}
       ${departmentFilter}
@@ -655,7 +671,7 @@ export const getCourseAnalyticsData = async (req, res) => {
       FROM users u
       LEFT JOIN courses c ON u.id = c.instructor_id
       LEFT JOIN course_enrollments ce ON c.id = ce.course_id
-      WHERE u.role = 'faculty' AND c.is_published = TRUE
+      WHERE u.role = 'faculty' AND c.is_published = true
       ${dateFilter}
       ${collegeFilter}
       ${departmentFilter}
@@ -676,7 +692,7 @@ export const getCourseAnalyticsData = async (req, res) => {
       LEFT JOIN courses c ON cm.course_id = c.id
       LEFT JOIN course_enrollments ce ON c.id = ce.course_id
       LEFT JOIN course_content cc ON cm.id = cc.module_id
-      WHERE c.is_published = TRUE
+      WHERE c.is_published = true
       ${dateFilter}
       ${collegeFilter}
       ${departmentFilter}
@@ -699,7 +715,7 @@ export const getCourseAnalyticsData = async (req, res) => {
         AVG(ce.rating) as averageRating
       FROM courses c
       LEFT JOIN course_enrollments ce ON c.id = ce.course_id
-      WHERE c.is_published = TRUE
+      WHERE c.is_published = true
       ${dateFilter}
       ${collegeFilter}
       ${departmentFilter}
@@ -784,7 +800,7 @@ export const saveAnalyticsView = async (req, res) => {
 
     const [result] = await pool.execute(`
       INSERT INTO analytics_views (id, name, module, filters, user_id, created_at)
-      VALUES (UUID(), ?, ?, ?, ?, NOW())
+      VALUES (gen_random_uuid(), ?, ?, ?, ?, NOW())
     `, [name, module, JSON.stringify(filters), userId]);
 
     res.json({
@@ -889,7 +905,7 @@ export const addChartAnnotation = async (req, res) => {
 
     const [result] = await pool.execute(`
       INSERT INTO chart_annotations (id, chart_type, data_point, title, comment, filters, user_id, created_at)
-      VALUES (UUID(), ?, ?, ?, ?, ?, ?, NOW())
+      VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?, NOW())
     `, [chartType, JSON.stringify(dataPoint), title, comment, JSON.stringify(filters), userId]);
 
     res.json({
@@ -965,7 +981,7 @@ export const getFacultyForAnalytics = async (req, res) => {
       SELECT u.id, u.name, u.email, c.name as college, u.department
       FROM users u
       LEFT JOIN colleges c ON u.college_id = c.id
-      WHERE u.role = 'faculty' AND u.is_active = TRUE
+      WHERE u.role = 'faculty' AND u.is_active = true
     `;
 
     const params = [];
@@ -1019,8 +1035,13 @@ export const getAssessmentDetails = async (req, res) => {
       dateFilter = 'AND sub.submitted_at BETWEEN ? AND ?';
       dateParams = [startDate, endDate];
     } else {
-      dateFilter = 'AND (sub.submitted_at >= DATE_SUB(NOW(), INTERVAL ? DAY) OR sub.submitted_at IS NULL)';
-      dateParams = [parseInt(dateRange)];
+      // Calculate date on application side - PostgreSQL doesn't support INTERVAL ? DAY in prepared statements
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      dateFilter = 'AND (sub.submitted_at >= ? OR sub.submitted_at IS NULL)';
+      dateParams = [cutoffDateStr];
     }
 
     // College filter
@@ -1047,11 +1068,11 @@ export const getAssessmentDetails = async (req, res) => {
         at.time_limit_minutes,
         at.total_points,
         at.passing_score,
-        at.status,
+        at.is_published as status,
         at.created_at,
         c.name as college_name,
         u.name as created_by_name
-      FROM assessment_templates at
+      FROM assessments at
       LEFT JOIN colleges c ON at.college_id = c.id
       LEFT JOIN users u ON at.created_by = u.id
       WHERE at.id = ?
@@ -1095,7 +1116,7 @@ export const getAssessmentDetails = async (req, res) => {
       FROM assessment_submissions sub
       LEFT JOIN users u ON sub.student_id = u.id
       LEFT JOIN colleges c ON u.college_id = c.id
-      LEFT JOIN assessment_templates at ON sub.assessment_id = at.id
+      LEFT JOIN assessments at ON sub.assessment_id = at.id
       WHERE sub.assessment_id = ?
       ${dateFilter}
       ${collegeFilter}
@@ -1114,7 +1135,7 @@ export const getAssessmentDetails = async (req, res) => {
         COALESCE(AVG(sub.time_taken_minutes), 0) as average_time_taken,
         COUNT(CASE WHEN sub.percentage_score >= at.passing_score THEN 1 END) as passed_count,
         COUNT(CASE WHEN sub.percentage_score < at.passing_score THEN 1 END) as failed_count
-      FROM assessment_templates at
+      FROM assessments at
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
       WHERE at.id = ?
       ${dateFilter}
@@ -1210,7 +1231,7 @@ export const getCollegesForAnalytics = async (req, res) => {
     const [colleges] = await pool.execute(`
       SELECT id, name, code
       FROM colleges 
-      WHERE is_active = TRUE 
+      WHERE is_active = true 
       ORDER BY name
     `);
 
@@ -1236,7 +1257,7 @@ export const getDepartmentsForAnalytics = async (req, res) => {
       SELECT d.id, d.name, d.code, c.name as collegeName
       FROM departments d
       JOIN colleges c ON d.college_id = c.id
-      WHERE d.is_active = TRUE
+      WHERE d.is_active = true
     `;
 
     const params = [];
@@ -1271,7 +1292,7 @@ export const getStudentsForAnalytics = async (req, res) => {
       SELECT u.id, u.name, u.email, c.name as college, u.department
       FROM users u
       LEFT JOIN colleges c ON u.college_id = c.id
-      WHERE u.role = 'student' AND u.is_active = TRUE
+      WHERE u.role = 'student' AND u.is_active = true
     `;
 
     const params = [];
@@ -1653,4 +1674,31 @@ export const getAssessmentStudentSubmissions = async (req, res) => {
       message: 'Failed to get assessment student submissions'
     });
   }
-}; 
+};
+
+// Get public stats for landing page
+export const getPublicStats = async (req, res) => {
+  try {
+    const {
+      activeUsers,
+      totalColleges,
+      totalAssessments,
+      totalSubmissions
+    } = await getPlatformStatsSnapshot();
+    res.json({
+      success: true,
+      data: {
+        activeUsers,
+        institutions: totalColleges,
+        assessments: totalAssessments,
+        submissions: totalSubmissions
+      }
+    });
+  } catch (error) {
+    console.error('Public stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get public stats'
+    });
+  }
+};

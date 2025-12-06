@@ -11,7 +11,7 @@ import { requireRole } from '../middleware/roleCheck.js';
 export const getCodingPlatforms = async (req, res) => {
   try {
     const [platforms] = await pool.execute(
-      'SELECT id, name, display_name, base_url, profile_url_pattern, is_active FROM coding_platforms WHERE is_active = TRUE ORDER BY display_name'
+      'SELECT id, name, display_name, base_url, profile_url_pattern, is_active FROM coding_platforms WHERE is_active = true ORDER BY display_name'
     );
 
     res.json({
@@ -313,10 +313,10 @@ export const getStudentPlatformStatistics = async (req, res) => {
             // Insert or update platform statistics cache
             await pool.execute(`
               INSERT INTO platform_statistics_cache (id, student_id, platform_name, username, statistics_data, last_fetched_at)
-              VALUES (UUID(), ?, ?, ?, ?, ?)
-              ON DUPLICATE KEY UPDATE
-                statistics_data = VALUES(statistics_data),
-                last_fetched_at = VALUES(last_fetched_at),
+              VALUES (gen_random_uuid(), ?, ?, ?, ?, ?)
+              ON CONFLICT (student_id, platform_name) DO UPDATE SET
+                statistics_data = EXCLUDED.statistics_data,
+                last_fetched_at = EXCLUDED.last_fetched_at,
                 updated_at = CURRENT_TIMESTAMP
             `, [studentId, platformName, profile.username, JSON.stringify(stats), currentTime]);
           } catch (dbError) {
@@ -369,26 +369,67 @@ export const getStudentCodingProfiles = async (req, res) => {
 
     const [profiles] = await pool.execute(query, [studentId]);
 
-    // Get performance data for each profile
-    const profilesWithData = await Promise.all(
-      profiles.map(async (profile) => {
-        const [performanceData] = await pool.execute(
-          'SELECT data_type, metric_name, numeric_value, difficulty_level, additional_data, recorded_at FROM coding_platform_data WHERE profile_id = ? ORDER BY recorded_at DESC',
-          [profile.id]
-        );
+    // OPTIMIZATION: Fetch all performance data and achievements in single queries to avoid N+1
+    const profileIds = profiles.map(p => p.id);
+    const performanceByProfile = {};
+    const achievementsByProfile = {};
 
-        const [achievements] = await pool.execute(
-          'SELECT achievement_type, achievement_name, achievement_level, stars_count, earned_at FROM coding_achievements WHERE profile_id = ? ORDER BY earned_at DESC',
-          [profile.id]
-        );
+    if (profileIds.length > 0) {
+      const profilePlaceholders = profileIds.map(() => '?').join(',');
+      
+      // Fetch all performance data in one query
+      const [performanceRows] = await pool.execute(
+        `SELECT profile_id, data_type, metric_name, numeric_value, difficulty_level, additional_data, recorded_at 
+         FROM coding_platform_data 
+         WHERE profile_id IN (${profilePlaceholders}) 
+         ORDER BY profile_id, recorded_at DESC`,
+        profileIds
+      );
 
-        return {
-          ...profile,
-          performance_data: performanceData,
-          achievements: achievements
-        };
-      })
-    );
+      // Fetch all achievements in one query
+      const [achievementRows] = await pool.execute(
+        `SELECT profile_id, achievement_type, achievement_name, achievement_level, stars_count, earned_at 
+         FROM coding_achievements 
+         WHERE profile_id IN (${profilePlaceholders}) 
+         ORDER BY profile_id, earned_at DESC`,
+        profileIds
+      );
+
+      // Group by profile_id
+      performanceRows.forEach(row => {
+        if (!performanceByProfile[row.profile_id]) {
+          performanceByProfile[row.profile_id] = [];
+        }
+        performanceByProfile[row.profile_id].push({
+          data_type: row.data_type,
+          metric_name: row.metric_name,
+          numeric_value: row.numeric_value,
+          difficulty_level: row.difficulty_level,
+          additional_data: row.additional_data,
+          recorded_at: row.recorded_at
+        });
+      });
+
+      achievementRows.forEach(row => {
+        if (!achievementsByProfile[row.profile_id]) {
+          achievementsByProfile[row.profile_id] = [];
+        }
+        achievementsByProfile[row.profile_id].push({
+          achievement_type: row.achievement_type,
+          achievement_name: row.achievement_name,
+          achievement_level: row.achievement_level,
+          stars_count: row.stars_count,
+          earned_at: row.earned_at
+        });
+      });
+    }
+
+    // Map profiles with their data
+    const profilesWithData = profiles.map(profile => ({
+      ...profile,
+      performance_data: performanceByProfile[profile.id] || [],
+      achievements: achievementsByProfile[profile.id] || []
+    }));
 
     res.json({
       success: true,
@@ -433,7 +474,7 @@ export const addCodingProfile = async (req, res) => {
 
     // Check if platform exists
     const [platformRows] = await pool.execute(
-      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = TRUE',
+      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = true',
       [platform]
     );
 
@@ -470,7 +511,7 @@ export const addCodingProfile = async (req, res) => {
     // Insert profile
     const profileId = randomUUID();
     await pool.execute(
-      'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, sync_status) VALUES (?, ?, ?, ?, ?, "pending")',
+      'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, sync_status) VALUES (?, ?, ?, ?, ?, \'pending\')',
       [profileId, studentId, platformId, username, profileUrl]
     );
 
@@ -508,7 +549,7 @@ export const updateCodingProfile = async (req, res) => {
 
     // Get platform ID
     const [platformRows] = await pool.execute(
-      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = TRUE',
+      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = true',
       [platform]
     );
 
@@ -615,7 +656,7 @@ export const syncCodingProfile = async (req, res) => {
     } catch (syncError) {
       // Update sync status to failed
       await pool.execute(
-        'UPDATE student_coding_profiles SET sync_status = "failed", sync_error = ? WHERE id = ?',
+        'UPDATE student_coding_profiles SET sync_status = \'failed\', sync_error = ? WHERE id = ?',
         [syncError.message, profileId]
       );
 
@@ -659,7 +700,7 @@ export const syncAllProfiles = async (req, res) => {
       try {
         // Update sync status to syncing
         await pool.execute(
-          'UPDATE student_coding_profiles SET sync_status = "syncing", sync_error = NULL WHERE id = ?',
+          'UPDATE student_coding_profiles SET sync_status = \'syncing\', sync_error = NULL WHERE id = ?',
           [profile.id]
         );
 
@@ -684,7 +725,7 @@ export const syncAllProfiles = async (req, res) => {
 
         // Update sync status to failed
         await pool.execute(
-          'UPDATE student_coding_profiles SET sync_status = "failed", sync_error = ? WHERE id = ?',
+          'UPDATE student_coding_profiles SET sync_status = \'failed\', sync_error = ? WHERE id = ?',
           [error.message, profile.id]
         );
 
@@ -876,10 +917,10 @@ export const fetchPlatformStatistics = async (req, res) => {
             // Insert or update platform statistics cache
             await pool.execute(`
               INSERT INTO platform_statistics_cache (id, student_id, platform_name, username, statistics_data, last_fetched_at)
-              VALUES (UUID(), ?, ?, ?, ?, ?)
-              ON DUPLICATE KEY UPDATE
-                statistics_data = VALUES(statistics_data),
-                last_fetched_at = VALUES(last_fetched_at),
+              VALUES (gen_random_uuid(), ?, ?, ?, ?, ?)
+              ON CONFLICT (student_id, platform_name) DO UPDATE SET
+                statistics_data = EXCLUDED.statistics_data,
+                last_fetched_at = EXCLUDED.last_fetched_at,
                 updated_at = CURRENT_TIMESTAMP
             `, [studentId, platformName, profile.username, JSON.stringify(stats), currentTime]);
           } catch (dbError) {
@@ -923,7 +964,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
     }
 
     // CRITICAL FIX: Limit batch size to prevent server overload
-    const MAX_BATCH_SIZE = 10; // Process max 10 students at a time
+    const MAX_BATCH_SIZE = 20; // Increased from 10 to 20 for better throughput
     const results = {};
     const batchId = randomUUID();
     const currentTime = new Date();
@@ -931,20 +972,67 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
     const cacheTTL = 60 * 60 * 1000; // 1 hour in milliseconds
     const cacheExpiryTime = new Date(currentTime.getTime() - cacheTTL);
 
+    // OPTIMIZATION: Fetch all profiles for all students in a single query to avoid N+1
+    const placeholders = studentIds.map(() => '?').join(',');
+    const [allProfiles] = await pool.execute(`
+      SELECT
+        scp.student_id,
+        scp.id, scp.username, scp.profile_url, scp.sync_status, scp.last_synced_at,
+        cp.name as platform_name, cp.base_url as platform_url
+      FROM student_coding_profiles scp
+      LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
+      WHERE scp.student_id IN (${placeholders})
+      ORDER BY scp.student_id, cp.name
+    `, studentIds);
+
+    // Group profiles by student_id
+    const profilesByStudent = {};
+    allProfiles.forEach(profile => {
+      if (!profilesByStudent[profile.student_id]) {
+        profilesByStudent[profile.student_id] = [];
+      }
+      profilesByStudent[profile.student_id].push(profile);
+    });
+
+    // OPTIMIZATION: Fetch all cached statistics in a single query
+    const [allCachedStats] = await pool.execute(`
+      SELECT 
+        student_id,
+        platform_name,
+        username,
+        statistics_data,
+        last_fetched_at
+      FROM platform_statistics_cache
+      WHERE student_id IN (${placeholders}) AND last_fetched_at > ?
+      ORDER BY student_id, platform_name
+    `, [...studentIds, cacheExpiryTime]);
+
+    // Group cached stats by student_id and platform_name
+    const cachedStatsByStudent = {};
+    allCachedStats.forEach(stat => {
+      if (!cachedStatsByStudent[stat.student_id]) {
+        cachedStatsByStudent[stat.student_id] = new Map();
+      }
+      let statisticsData;
+      if (typeof stat.statistics_data === 'string') {
+        statisticsData = JSON.parse(stat.statistics_data);
+      } else {
+        statisticsData = stat.statistics_data;
+      }
+      cachedStatsByStudent[stat.student_id].set(stat.platform_name, {
+        ...statisticsData,
+        username: stat.username,
+        lastFetched: stat.last_fetched_at,
+        cached: true
+      });
+    });
+
     // Process students in smaller batches to prevent server overload
     const processStudentBatch = async (studentBatch) => {
       return Promise.all(studentBatch.map(async (studentId) => {
         try {
-          // Get student's coding profiles
-          const [profiles] = await pool.execute(`
-          SELECT
-            scp.id, scp.username, scp.profile_url, scp.sync_status, scp.last_synced_at,
-            cp.name as platform_name, cp.base_url as platform_url
-          FROM student_coding_profiles scp
-          LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
-          WHERE scp.student_id = ?
-          ORDER BY cp.name
-        `, [studentId]);
+          // Get student's coding profiles from pre-fetched data
+          const profiles = profilesByStudent[studentId] || [];
 
           if (profiles.length === 0) {
             return { studentId, platformStatistics: null };
@@ -956,34 +1044,8 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
           const platformsToScrape = {};
 
           if (!forceRefresh) {
-            // Get cached statistics for all platforms
-            const [cachedStats] = await pool.execute(`
-            SELECT 
-              platform_name,
-              username,
-              statistics_data,
-              last_fetched_at
-            FROM platform_statistics_cache
-            WHERE student_id = ? AND last_fetched_at > ?
-            ORDER BY platform_name
-          `, [studentId, cacheExpiryTime]);
-
-            // Build map of cached platforms
-            const cachedPlatforms = new Map();
-            cachedStats.forEach(stat => {
-              let statisticsData;
-              if (typeof stat.statistics_data === 'string') {
-                statisticsData = JSON.parse(stat.statistics_data);
-              } else {
-                statisticsData = stat.statistics_data;
-              }
-              cachedPlatforms.set(stat.platform_name, {
-                ...statisticsData,
-                username: stat.username,
-                lastFetched: stat.last_fetched_at,
-                cached: true
-              });
-            });
+            // Get cached statistics from pre-fetched data
+            const cachedPlatforms = cachedStatsByStudent[studentId] || new Map();
 
             // Check which platforms need scraping
             profiles.forEach(profile => {
@@ -1046,10 +1108,10 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                   dbPromises.push(
                     pool.execute(`
                     INSERT INTO platform_statistics_cache (id, student_id, platform_name, username, statistics_data, last_fetched_at)
-                    VALUES (UUID(), ?, ?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                      statistics_data = VALUES(statistics_data),
-                      last_fetched_at = VALUES(last_fetched_at),
+                    VALUES (gen_random_uuid(), ?, ?, ?, ?, ?)
+                    ON CONFLICT (student_id, platform_name) DO UPDATE SET
+                      statistics_data = EXCLUDED.statistics_data,
+                      last_fetched_at = EXCLUDED.last_fetched_at,
                       updated_at = CURRENT_TIMESTAMP
                   `, [studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
@@ -1058,7 +1120,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                   dbPromises.push(
                     pool.execute(`
                     INSERT INTO batch_platform_statistics_cache (id, batch_id, student_id, platform_name, username, statistics_data, last_fetched_at)
-                    VALUES (UUID(), ?, ?, ?, ?, ?, ?)
+                    VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
                   `, [batchId, studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
                 }
@@ -1080,7 +1142,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                   dbPromises.push(
                     pool.execute(`
                     INSERT INTO batch_platform_statistics_cache (id, batch_id, student_id, platform_name, username, statistics_data, last_fetched_at)
-                    VALUES (UUID(), ?, ?, ?, ?, ?, ?)
+                    VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
                   `, [batchId, studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
                 }
@@ -1109,9 +1171,10 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
         const batchResults = await processStudentBatch(batch);
         allResults.push(...batchResults);
 
-        // Small delay between batches to prevent overwhelming the server
+        // OPTIMIZATION: Reduced delay between batches from 1000ms to 100ms for better throughput
+        // Only add delay if there are more batches to process
         if (i + MAX_BATCH_SIZE < studentIds.length) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between batches
+          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between batches
         }
       } catch (batchError) {
         console.error(`Error processing batch starting at index ${i}:`, batchError);
@@ -1304,10 +1367,10 @@ export const getCodingProfileAnalytics = async (req, res) => {
       SELECT 
         cp.display_name as platform,
         COUNT(scp.id) as profile_count,
-        COUNT(CASE WHEN scp.is_verified = TRUE THEN 1 END) as verified_count
+        COUNT(CASE WHEN scp.is_verified = true THEN 1 END) as verified_count
       FROM coding_platforms cp
       LEFT JOIN student_coding_profiles scp ON cp.id = scp.platform_id
-      WHERE cp.is_active = TRUE
+      WHERE cp.is_active = true
       GROUP BY cp.id, cp.display_name
       ORDER BY profile_count DESC
     `);
@@ -1362,7 +1425,7 @@ export const updateStudentCodingProfile = async (req, res) => {
 
     // Get platform ID
     const [platformRows] = await pool.execute(
-      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = TRUE',
+      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = true',
       [platform]
     );
 

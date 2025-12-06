@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../config/database.js';
 
+const isSupabase = !!process.env.SUPABASE_URL;
+
 // Cache for table existence checks to avoid repeated database queries
 const tableCheckCache = {
   emailVerification: false,
@@ -66,7 +68,7 @@ export const register = async (req, res) => {
     if (role === 'super-admin') {
       // Check if there are any existing super admins
       const [existingSuperAdmins] = await pool.execute(
-        'SELECT COUNT(*) as count FROM users WHERE role = ? AND is_active = TRUE',
+        'SELECT COUNT(*) as count FROM users WHERE role = ? AND is_active = true',
         ['super-admin']
       );
 
@@ -112,11 +114,11 @@ export const register = async (req, res) => {
     // CRITICAL FIX: Ensure email_verification_tokens table exists
     await ensureEmailVerificationTable();
 
-    // Create user with email_verified = FALSE and is_active = FALSE (will be activated after verification)
+    // Create user with email_verified = false and is_active = false (will be activated after verification)
     const userId = uuidv4();
     const [result] = await pool.execute(
       `INSERT INTO users (id, email, password, name, role, college_id, department, student_id, phone, country, is_active, email_verified) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, FALSE)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false)`,
       [userId, email, hashedPassword, name, role, college_id || null, department || null, student_id || null, phone || null, country || null]
     );
 
@@ -141,13 +143,17 @@ export const register = async (req, res) => {
       if (process.env.NODE_ENV === 'development' && !emailService.isConfigured) {
         console.log(`⚠️  Development mode: Email service not configured. Auto-verifying user ${userId}`);
         await pool.execute(
-          'UPDATE users SET email_verified = TRUE, is_active = TRUE WHERE id = ?',
+          'UPDATE users SET email_verified = true, is_active = true WHERE id = ?',
           [userId]
         );
         autoVerified = true;
       } else {
         // Try to send verification email
-        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
+        const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
+        if (!frontendUrl) {
+          throw new Error('FRONTEND_URL environment variable is required in production');
+        }
+        const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
         const emailResult = await emailService.sendVerificationEmail(email, name, verificationUrl);
         emailSent = emailResult.success !== false;
       }
@@ -157,7 +163,7 @@ export const register = async (req, res) => {
       if (process.env.NODE_ENV === 'development') {
         console.log(`⚠️  Development mode: Email sending failed. Auto-verifying user ${userId}`);
         await pool.execute(
-          'UPDATE users SET email_verified = TRUE, is_active = TRUE WHERE id = ?',
+          'UPDATE users SET email_verified = true, is_active = true WHERE id = ?',
           [userId]
         );
         autoVerified = true;
@@ -212,9 +218,10 @@ export const login = async (req, res) => {
     // CRITICAL FIX: Ensure login_attempts table exists
     await ensureLoginAttemptsTable();
 
-    // Find user by email
+    // OPTIMIZATION: Add LIMIT 1 and ensure email column is indexed
+    // Find user by email (optimized query)
     const [users] = await pool.execute(
-      'SELECT id, email, password, name, role, college_id, department, student_id, phone, avatar_url, country, is_active, email_verified FROM users WHERE email = ?',
+      'SELECT id, email, password, name, role, college_id, department, student_id, phone, avatar_url, country, is_active, email_verified FROM users WHERE email = ? LIMIT 1',
       [email]
     );
 
@@ -238,7 +245,7 @@ export const login = async (req, res) => {
           if (!emailService.isConfigured) {
             console.log(`⚠️  Development mode: Auto-verifying email for user ${user.id}`);
             await pool.execute(
-              'UPDATE users SET email_verified = TRUE, is_active = TRUE WHERE id = ?',
+              'UPDATE users SET email_verified = true, is_active = true WHERE id = ?',
               [user.id]
             );
             user.email_verified = true;
@@ -554,17 +561,18 @@ async function ensureEmailVerificationTable() {
   try {
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS email_verification_tokens (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+        id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id VARCHAR(36) NOT NULL,
         token VARCHAR(255) NOT NULL UNIQUE,
         expires_at TIMESTAMP NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        INDEX idx_user_id (user_id),
-        INDEX idx_token (token),
-        INDEX idx_expires_at (expires_at)
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+    // Create indexes separately (PostgreSQL syntax)
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_user_id ON email_verification_tokens(user_id)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_token ON email_verification_tokens(token)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_expires_at ON email_verification_tokens(expires_at)`);
     // Mark as checked after successful creation/verification
     tableCheckCache.emailVerification = true;
   } catch (error) {
@@ -625,7 +633,7 @@ export const verifyEmail = async (req, res) => {
 
     // Update user email_verified status and activate account
     const [updateResult] = await pool.execute(
-      'UPDATE users SET email_verified = TRUE, is_active = TRUE WHERE id = ?',
+      'UPDATE users SET email_verified = true, is_active = true WHERE id = ?',
       [tokenData.user_id]
     );
 
@@ -673,9 +681,10 @@ export const resendVerificationEmail = async (req, res) => {
     // Ensure email_verification_tokens table exists
     await ensureEmailVerificationTable();
 
-    // Find user by email
+    // OPTIMIZATION: Add index hint and limit query to single row
+    // Find user by email (optimized query)
     const [users] = await pool.execute(
-      'SELECT id, email, name, email_verified FROM users WHERE email = ?',
+      'SELECT id, email, name, email_verified FROM users WHERE email = ? LIMIT 1',
       [email]
     );
 
@@ -719,7 +728,11 @@ export const resendVerificationEmail = async (req, res) => {
     (async () => {
       try {
         const emailService = (await import('../services/emailService.js')).default;
-        const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/verify-email?token=${verificationToken}`;
+        const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
+        if (!frontendUrl) {
+          throw new Error('FRONTEND_URL environment variable is required in production');
+        }
+        const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
 
         await emailService.sendVerificationEmail(user.email, user.name, verificationUrl);
       } catch (emailError) {
@@ -799,7 +812,11 @@ export const requestPasswordReset = async (req, res) => {
     // Send password reset email
     try {
       const emailService = (await import('../services/emailService.js')).default;
-      const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
+      const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173');
+      if (!frontendUrl) {
+        throw new Error('FRONTEND_URL environment variable is required in production');
+      }
+      const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
       await emailService.sendPasswordResetEmail(user.email, user.name, resetUrl);
     } catch (emailError) {
@@ -901,17 +918,18 @@ async function ensurePasswordResetTable() {
   try {
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS password_reset_tokens (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+        id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id VARCHAR(36) NOT NULL,
         token VARCHAR(255) NOT NULL UNIQUE,
         expires_at TIMESTAMP NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        INDEX idx_user_id (user_id),
-        INDEX idx_token (token),
-        INDEX idx_expires_at (expires_at)
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+    // Create indexes separately (PostgreSQL syntax)
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token ON password_reset_tokens(token)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires_at ON password_reset_tokens(expires_at)`);
   } catch (error) {
     if (!error.message.includes('already exists')) {
       console.error('Error creating password_reset_tokens table:', error);
@@ -921,22 +939,36 @@ async function ensurePasswordResetTable() {
 
 // CRITICAL FIX: Ensure login_attempts table exists
 async function ensureLoginAttemptsTable() {
+  if (isSupabase) {
+    if (!tableCheckCache.loginAttempts) {
+      console.warn('Supabase detected - ensureLoginAttemptsTable skipped. Make sure login_attempts exists via migration.');
+      tableCheckCache.loginAttempts = true;
+    }
+    return;
+  }
+
+  if (tableCheckCache.loginAttempts) {
+    return;
+  }
+
   try {
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS login_attempts (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+        id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id VARCHAR(36),
         email VARCHAR(255) NOT NULL,
         ip_address VARCHAR(45),
         success BOOLEAN DEFAULT FALSE,
         attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_user_id (user_id),
-        INDEX idx_email (email),
-        INDEX idx_ip_address (ip_address),
-        INDEX idx_attempted_at (attempted_at),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+    // Create indexes separately (PostgreSQL syntax)
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_login_attempts_user_id ON login_attempts(user_id)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_address ON login_attempts(ip_address)`);
+    await pool.execute(`CREATE INDEX IF NOT EXISTS idx_login_attempts_attempted_at ON login_attempts(attempted_at)`);
+    tableCheckCache.loginAttempts = true;
   } catch (error) {
     if (!error.message.includes('already exists')) {
       console.error('Error creating login_attempts table:', error);
@@ -964,11 +996,16 @@ async function checkAccountLockout(userId) {
     await ensureLoginAttemptsTable();
 
     // Get failed attempts in the last 15 minutes
+    // Calculate date on application side - PostgreSQL compatible
+    const cutoffDate = new Date();
+    cutoffDate.setMinutes(cutoffDate.getMinutes() - 15);
+    const cutoffDateStr = cutoffDate.toISOString();
+    
     const [recentAttempts] = await pool.execute(
       `SELECT COUNT(*) as count FROM login_attempts 
-       WHERE user_id = ? AND success = FALSE 
-       AND attempted_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)`,
-      [userId]
+       WHERE user_id = ? AND success = false 
+       AND attempted_at > ?`,
+      [userId, cutoffDateStr]
     );
 
     const failedAttempts = recentAttempts[0]?.count || 0;
@@ -986,7 +1023,7 @@ async function checkAccountLockout(userId) {
       // Column might already exist, ignore duplicate column errors
       if (!error.message.includes('Duplicate column name') &&
         !error.message.includes('already exists') &&
-        error.code !== 'ER_DUP_FIELDNAME') {
+        error.code !== 'ER_DUP_FIELDNAME' && error.code !== '42701' && !error.message?.includes('already exists')) {
         // Only log if it's not a duplicate column error
         console.error('Error adding locked_until column:', error);
       }
@@ -1046,7 +1083,7 @@ async function lockAccount(userId, lockoutMinutes) {
       // Column might already exist, ignore duplicate column errors
       if (!error.message.includes('Duplicate column name') &&
         !error.message.includes('already exists') &&
-        error.code !== 'ER_DUP_FIELDNAME') {
+        error.code !== 'ER_DUP_FIELDNAME' && error.code !== '42701' && !error.message?.includes('already exists')) {
         // Only log if it's not a duplicate column error
         console.error('Error adding locked_until column:', error);
       }

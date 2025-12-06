@@ -181,27 +181,22 @@ class EmailService {
       const { pool: db } = await import('../config/database.js');
       await db.query(`
         CREATE TABLE IF NOT EXISTS email_delivery_tracking (
-          id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+          id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
           recipient_email VARCHAR(255) NOT NULL,
           recipient_id VARCHAR(36),
           assessment_id VARCHAR(36),
           notification_type VARCHAR(50),
           message_id VARCHAR(255),
-          status ENUM('pending', 'sent', 'delivered', 'bounced', 'failed') DEFAULT 'pending',
+          status VARCHAR(20) CHECK (status IN ('pending', 'sent', 'delivered', 'bounced', 'failed')) DEFAULT 'pending',
           sent_at TIMESTAMP NULL,
           delivered_at TIMESTAMP NULL,
           bounced_at TIMESTAMP NULL,
           error_message TEXT,
-          metadata JSON,
+          metadata JSONB,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          INDEX idx_recipient_email (recipient_email),
-          INDEX idx_recipient_id (recipient_id),
-          INDEX idx_assessment_id (assessment_id),
-          INDEX idx_status (status),
-          INDEX idx_sent_at (sent_at),
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL,
-          FOREIGN KEY (assessment_id) REFERENCES assessment_templates(id) ON DELETE SET NULL
+          FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON DELETE SET NULL
         )
       `);
     } catch (error) {
@@ -599,7 +594,7 @@ class EmailService {
             
             
             <div style="text-align: center; margin: 20px 0;">
-              <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/assessments" class="button">
+              <a href="${process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5173')}/assessments" class="button">
                 ${isReminder ? '🚀 Take Assessment Now' : '📝 Access Assessment'}
               </a>
             </div>

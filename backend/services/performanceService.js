@@ -338,11 +338,11 @@ class PerformanceService {
                 INSERT INTO student_responses 
                 (id, submission_id, question_id, answer, metadata, version, created_at, updated_at)
                 VALUES ?
-                ON DUPLICATE KEY UPDATE
-                answer = VALUES(answer),
-                metadata = VALUES(metadata),
-                version = version + 1,
-                updated_at = VALUES(updated_at)
+                ON CONFLICT (submission_id, question_id) DO UPDATE SET
+                answer = EXCLUDED.answer,
+                metadata = EXCLUDED.metadata,
+                version = student_responses.version + 1,
+                updated_at = EXCLUDED.updated_at
             `;
             
             await db.query(query, [values]);
@@ -433,13 +433,13 @@ class PerformanceService {
             INSERT INTO assessment_analytics_cache 
             (assessment_id, total_students, completed_count, average_score, min_score, max_score, completion_rate, last_updated)
             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-            ON DUPLICATE KEY UPDATE
-            total_students = VALUES(total_students),
-            completed_count = VALUES(completed_count),
-            average_score = VALUES(average_score),
-            min_score = VALUES(min_score),
-            max_score = VALUES(max_score),
-            completion_rate = VALUES(completion_rate),
+            ON CONFLICT (assessment_id) DO UPDATE SET
+            total_students = EXCLUDED.total_students,
+            completed_count = EXCLUDED.completed_count,
+            average_score = EXCLUDED.average_score,
+            min_score = EXCLUDED.min_score,
+            max_score = EXCLUDED.max_score,
+            completion_rate = EXCLUDED.completion_rate,
             last_updated = NOW()
         `;
         
@@ -515,10 +515,9 @@ class PerformanceService {
         try {
             // Set connection pool settings
             const query = `
-                SET SESSION innodb_buffer_pool_size = 1073741824;
-                SET SESSION query_cache_size = 268435456;
-                SET SESSION tmp_table_size = 134217728;
-                SET SESSION max_heap_table_size = 134217728;
+                -- PostgreSQL: These MySQL-specific session variables don't apply
+                -- PostgreSQL uses different configuration (shared_buffers, work_mem, etc.)
+                -- These are configured at the database level, not per-session
             `;
             
             await db.query(query);

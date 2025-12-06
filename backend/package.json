@@ -11,9 +11,12 @@
     "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "migrate": "node scripts/runMigrations.js",
-    "migrate:status": "node -e \"import('./utils/migrationRunner.js').then(m => m.default.getMigrationStatus().then(s => console.table(s)))\""
+    "migrate:status": "node -e \"import('./utils/migrationRunner.js').then(m => m.default.getMigrationStatus().then(s => console.table(s)))\"",
+    "migrate:mysql-to-supabase": "node scripts/migrate-mysql-to-supabase.js"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.11.5",
+    "@supabase/supabase-js": "^2.39.0",
     "axios": "^1.12.2",
     "bcryptjs": "^2.4.3",
     "cheerio": "^1.1.2",
@@ -31,11 +34,11 @@
     "jsonwebtoken": "^9.0.2",
     "judge0-client": "^0.1.0",
     "multer": "^1.4.5-lts.1",
-    "@supabase/supabase-js": "^2.39.0",
     "mysql2": "^3.6.5",
     "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.7",
     "pdfkit": "^0.17.1",
+    "pg": "^8.16.3",
     "prop-types": "^15.8.1",
     "puppeteer": "^24.22.3",
     "react-hot-toast": "^2.6.0",

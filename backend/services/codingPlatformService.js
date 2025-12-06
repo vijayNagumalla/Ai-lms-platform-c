@@ -606,13 +606,13 @@ class CodingPlatformService {
       if (existingProfile.length > 0) {
         profileId = existingProfile[0].id;
         await connection.execute(
-          'UPDATE student_coding_profiles SET username = ?, profile_url = ?, is_verified = TRUE, last_synced_at = NOW(), sync_status = "success" WHERE id = ?',
+          'UPDATE student_coding_profiles SET username = ?, profile_url = ?, is_verified = true, last_synced_at = NOW(), sync_status = \'success\' WHERE id = ?',
           [scrapedData.username, scrapedData.profile_url, profileId]
         );
       } else {
         const profileUuid = randomUUID();
         await connection.execute(
-          'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, is_verified, last_synced_at, sync_status) VALUES (?, ?, ?, ?, ?, TRUE, NOW(), "success")',
+          'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, is_verified, last_synced_at, sync_status) VALUES (?, ?, ?, ?, ?, true, NOW(), \'success\')',
           [profileUuid, studentId, platformId, scrapedData.username, scrapedData.profile_url]
         );
         profileId = profileUuid;

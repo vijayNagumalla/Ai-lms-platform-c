@@ -1728,8 +1728,8 @@ const UserManagementPage = () => {
                             <SelectValue placeholder="Select college" />
                           </SelectTrigger>
                           <SelectContent>
-                            {Array.isArray(colleges) && colleges.map(college => (
-                              <SelectItem key={college.id} value={college.id}>
+                            {Array.isArray(colleges) && colleges.filter(college => college?.id != null).map(college => (
+                              <SelectItem key={college.id} value={college.id.toString()}>
                                 {college.name}
                               </SelectItem>
                             ))}
@@ -2397,7 +2397,7 @@ const UserManagementPage = () => {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All Colleges</SelectItem>
-                          {colleges.map(college => (
+                          {colleges.filter(college => college?.id != null).map(college => (
                             <SelectItem key={college.id} value={college.id.toString()}>
                               {college.name}
                             </SelectItem>
@@ -2982,8 +2982,8 @@ const UserManagementPage = () => {
                       <SelectValue placeholder="Select college" />
                     </SelectTrigger>
                     <SelectContent>
-                      {Array.isArray(colleges) && colleges.map(college => (
-                        <SelectItem key={college.id} value={college.id}>
+                      {Array.isArray(colleges) && colleges.filter(college => college?.id != null).map(college => (
+                        <SelectItem key={college.id} value={college.id.toString()}>
                           {college.name}
                         </SelectItem>
                       ))}
@@ -3458,7 +3458,7 @@ const UserManagementPage = () => {
                       <SelectValue placeholder="Select college" />
                     </SelectTrigger>
                     <SelectContent>
-                      {colleges.map(college => (
+                      {colleges.filter(college => college?.id != null).map(college => (
                         <SelectItem key={college.id} value={college.id.toString()}>
                           {college.name}
                         </SelectItem>
@@ -3921,7 +3921,7 @@ const UserManagementPage = () => {
                       <SelectValue placeholder="Select college" />
                     </SelectTrigger>
                     <SelectContent>
-                      {colleges.map(college => (
+                      {colleges.filter(college => college?.id != null).map(college => (
                         <SelectItem key={college.id} value={college.id.toString()}>
                           {college.name}
                         </SelectItem>

@@ -456,7 +456,12 @@ router.post('/:submissionId/questions/:questionId/flag', auth, roleCheck(['stude
             await connection.beginTransaction();
 
             // Check if is_flagged column exists
-            const [columns] = await connection.query('SHOW COLUMNS FROM student_responses');
+            // PostgreSQL: Query information_schema instead of SHOW COLUMNS
+            const [columns] = await connection.query(`
+                SELECT column_name as Field 
+                FROM information_schema.columns 
+                WHERE table_name = 'student_responses'
+            `);
             const hasFlaggedColumn = columns.some(col => col.Field === 'is_flagged');
 
             if (!hasFlaggedColumn) {
@@ -471,8 +476,8 @@ router.post('/:submissionId/questions/:questionId/flag', auth, roleCheck(['stude
             await connection.query(`
                 INSERT INTO student_responses (submission_id, question_id, is_flagged)
                 VALUES (?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    is_flagged = VALUES(is_flagged)
+                ON CONFLICT (submission_id, question_id) DO UPDATE SET
+                    is_flagged = EXCLUDED.is_flagged
             `, [submissionId, questionId, isFlagged === true || isFlagged === 'true']);
 
             await connection.commit();

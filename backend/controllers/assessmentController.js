@@ -371,7 +371,7 @@ export const createAssessmentTemplate = async (req, res) => {
     // Insert assessment template
     try {
       await pool.execute(
-        `INSERT INTO assessment_templates (
+        `INSERT INTO assessments (
           id, title, description, instructions, assessment_type, difficulty_level,
           time_limit_minutes, total_points, passing_score, max_attempts, shuffle_questions,
           show_results_immediately, allow_review, require_proctoring, status, created_by,
@@ -396,7 +396,7 @@ export const createAssessmentTemplate = async (req, res) => {
 
     // Get the created assessment
     const [assessments] = await pool.execute(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [assessment_id]
     );
 
@@ -477,7 +477,7 @@ export const getAssessmentTemplates = async (req, res) => {
 
     // Get total count
     const [countResult] = await pool.query(
-      `SELECT COUNT(*) as total FROM assessment_templates ${whereClause}`,
+      `SELECT COUNT(*) as total FROM assessments ${whereClause}`,
       params
     );
 
@@ -495,12 +495,12 @@ export const getAssessmentTemplates = async (req, res) => {
         c.name as college_name,
         (SELECT COUNT(*) FROM assessment_assignments WHERE assessment_id = at.id) as assignment_count,
         (SELECT COUNT(*) FROM assessment_submissions WHERE assessment_id = at.id) as submission_count,
-        DATE_FORMAT(at.default_start_date_only, '%Y-%m-%d') as start_date_only,
-        TIME_FORMAT(at.default_start_time_only, '%H:%i:%s') as start_time_only,
-        DATE_FORMAT(at.default_end_date_only, '%Y-%m-%d') as end_date_only,
-        TIME_FORMAT(at.default_end_time_only, '%H:%i:%s') as end_time_only,
+        TO_CHAR(at.default_start_date_only, 'YYYY-MM-DD') as start_date_only,
+        TO_CHAR(at.default_start_time_only, 'HH24:MI:SS') as start_time_only,
+        TO_CHAR(at.default_end_date_only, 'YYYY-MM-DD') as end_date_only,
+        TO_CHAR(at.default_end_time_only, 'HH24:MI:SS') as end_time_only,
         at.default_assessment_timezone as assessment_timezone
-      FROM assessment_templates at
+      FROM assessments at
       LEFT JOIN users u ON at.created_by = u.id
       LEFT JOIN colleges c ON at.college_id = c.id
       ${whereClause}
@@ -563,7 +563,7 @@ export const getAssessmentTemplateById = async (req, res) => {
         u.name as creator_name,
         u.email as creator_email,
         c.name as college_name
-      FROM assessment_templates at
+      FROM assessments at
       LEFT JOIN users u ON at.created_by = u.id
       LEFT JOIN colleges c ON at.college_id = c.id
       WHERE at.id = ?`,
@@ -699,7 +699,7 @@ export const updateAssessmentTemplate = async (req, res) => {
 
     // Check if assessment exists
     const [assessments] = await pool.execute(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [id]
     );
 
@@ -813,7 +813,7 @@ export const updateAssessmentTemplate = async (req, res) => {
 
     if (updateFields.length > 0) {
       updateValues.push(id);
-      const updateQuery = `UPDATE assessment_templates SET ${updateFields.join(', ')} WHERE id = ?`;
+      const updateQuery = `UPDATE assessments SET ${updateFields.join(', ')} WHERE id = ?`;
 
       await pool.execute(updateQuery, updateValues);
     }
@@ -880,7 +880,7 @@ export const updateAssessmentTemplate = async (req, res) => {
 
     // Get updated assessment
     const [updatedAssessments] = await pool.execute(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [id]
     );
 
@@ -907,7 +907,7 @@ export const deleteAssessmentTemplate = async (req, res) => {
 
     // Check if assessment exists
     const [assessments] = await pool.execute(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [id]
     );
 
@@ -920,7 +920,7 @@ export const deleteAssessmentTemplate = async (req, res) => {
 
     // Delete assessment (cascade will handle related records)
     await pool.execute(
-      'DELETE FROM assessment_templates WHERE id = ?',
+      'DELETE FROM assessments WHERE id = ?',
       [id]
     );
 
@@ -1161,7 +1161,7 @@ export const addQuestionToAssessment = async (req, res) => {
 
         // Get the current assessment template
         const [assessmentResult] = await pool.execute(
-          'SELECT sections FROM assessment_templates WHERE id = ?',
+          'SELECT sections FROM assessments WHERE id = ?',
           [assessment_id]
         );
 
@@ -1212,7 +1212,7 @@ export const addQuestionToAssessment = async (req, res) => {
 
           // Update the assessment template with the new sections
           await pool.execute(
-            'UPDATE assessment_templates SET sections = ? WHERE id = ?',
+            'UPDATE assessments SET sections = ? WHERE id = ?',
             [JSON.stringify(sections), assessment_id]
           );
 
@@ -1721,7 +1721,7 @@ const getRecipientEmailsFromAssignments = async (assignments) => {
       switch (assignment.assignment_type) {
         case 'college':
           const [collegeStudents] = await pool.execute(
-            'SELECT email, name FROM users WHERE college_id = ? AND role = "student" AND is_active = TRUE',
+            'SELECT email, name FROM users WHERE college_id = ? AND role = \'student\' AND is_active = true',
             [assignment.target_id]
           );
           emails.push(...collegeStudents);
@@ -1729,7 +1729,7 @@ const getRecipientEmailsFromAssignments = async (assignments) => {
 
         case 'department':
           const [deptStudents] = await pool.execute(
-            'SELECT email, name FROM users WHERE department = ? AND role = "student" AND is_active = TRUE',
+            'SELECT email, name FROM users WHERE department = ? AND role = \'student\' AND is_active = true',
             [assignment.target_id]
           );
           emails.push(...deptStudents);
@@ -1742,7 +1742,7 @@ const getRecipientEmailsFromAssignments = async (assignments) => {
 
         case 'individual':
           const [student] = await pool.execute(
-            'SELECT email, name FROM users WHERE id = ? AND role = "student" AND is_active = TRUE',
+            'SELECT email, name FROM users WHERE id = ? AND role = \'student\' AND is_active = true',
             [assignment.target_id]
           );
           if (student.length > 0) {
@@ -1792,7 +1792,7 @@ export const sendAssessmentReminder = async (req, res) => {
 
     // Get assessment details
     const [assessmentRows] = await pool.execute(
-      `SELECT * FROM assessment_templates WHERE id = ?`,
+      `SELECT * FROM assessments WHERE id = ?`,
       [assessment_id]
     );
 
@@ -1913,7 +1913,7 @@ export const getAssessmentQuestionsForAdmin = async (req, res) => {
       // Super admin can access any assessment
       accessQuery = `
         SELECT a.* 
-        FROM assessment_templates a
+        FROM assessments a
         WHERE a.id = ?
       `;
       accessParams = [assessment_id];
@@ -1921,7 +1921,7 @@ export const getAssessmentQuestionsForAdmin = async (req, res) => {
       // College admin and faculty can access assessments they created or from their college
       accessQuery = `
         SELECT a.* 
-        FROM assessment_templates a
+        FROM assessments a
         WHERE a.id = ? 
         AND (a.created_by = ? OR a.college_id IN (
           SELECT college_id FROM users WHERE id = ?
@@ -2020,7 +2020,7 @@ export const getAssessmentQuestions = async (req, res) => {
       // Super admin can access any assessment
       accessQuery = `
         SELECT a.* 
-        FROM assessment_templates a
+        FROM assessments a
         WHERE a.id = ?
       `;
       accessParams = [assessment_id];
@@ -2028,7 +2028,7 @@ export const getAssessmentQuestions = async (req, res) => {
       // College admin and faculty can access assessments they created or from their college
       accessQuery = `
         SELECT a.* 
-        FROM assessment_templates a
+        FROM assessments a
         WHERE a.id = ? 
         AND (a.created_by = ? OR a.college_id IN (
           SELECT college_id FROM users WHERE id = ?
@@ -2040,12 +2040,12 @@ export const getAssessmentQuestions = async (req, res) => {
       accessQuery = `
         SELECT aa.*, a.* 
         FROM assessment_assignments aa
-        JOIN assessment_templates a ON aa.assessment_id = a.id
+        JOIN assessments a ON aa.assessment_id = a.id
         WHERE aa.assessment_id = ? 
         AND (aa.target_id = ? OR aa.target_id IN (
           SELECT college_id FROM users WHERE id = ?
         ))
-        AND a.status = 'published'
+        AND a.is_published = true
       `;
       accessParams = [assessment_id, user_id, user_id];
     }
@@ -2284,7 +2284,7 @@ export const getAssessmentSubmission = async (req, res) => {
         aa.end_date_only,
         aa.end_time_only
       FROM assessment_submissions sub
-      JOIN assessment_templates a ON sub.assessment_id = a.id
+      JOIN assessments a ON sub.assessment_id = a.id
       LEFT JOIN assessment_assignments aa ON sub.assessment_id = aa.assessment_id AND aa.target_id = ?
       WHERE sub.assessment_id = ? AND sub.student_id = ?
       ORDER BY 
@@ -2369,7 +2369,7 @@ export const saveAssessmentProgress = async (req, res) => {
         aa.end_date_only,
         aa.end_time_only
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -2515,7 +2515,7 @@ export const submitAssessment = async (req, res) => {
         a.time_limit_minutes,
         a.max_attempts
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -2610,7 +2610,7 @@ export const submitAssessment = async (req, res) => {
     const accessQuery = `
       SELECT aa.*, a.* 
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -2998,7 +2998,7 @@ const checkAssessmentExpiration = async (assessmentId, studentId) => {
         if (now > endDateTime) {
           // Calculate time taken using server timestamp (NOW()) instead of client time
           const [timeCalculation] = await connection.query(`
-              SELECT TIMESTAMPDIFF(MINUTE, started_at, NOW()) as time_taken_minutes
+              SELECT EXTRACT(EPOCH FROM (NOW() - started_at)) / 60 as time_taken_minutes
               FROM assessment_submissions
               WHERE id = ? AND status = 'in_progress'
           `, [submission_id]);
@@ -3087,7 +3087,7 @@ export const startAssessmentAttempt = async (req, res) => {
     const accessQuery = `
       SELECT aa.*, a.* 
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -3186,7 +3186,7 @@ export const startAssessmentAttempt = async (req, res) => {
             s.started_at
           FROM assessment_submissions s
           JOIN assessment_assignments aa ON s.assessment_id = aa.assessment_id
-          JOIN assessment_templates a ON aa.assessment_id = a.id
+          JOIN assessments a ON aa.assessment_id = a.id
           WHERE s.id = ?
         `, [submissionId]);
 
@@ -3207,7 +3207,7 @@ export const startAssessmentAttempt = async (req, res) => {
           // Check if time limit exceeded
           if (expiryInfo.started_at && expiryInfo.time_limit_minutes) {
             const [elapsedTime] = await connection.query(`
-              SELECT TIMESTAMPDIFF(MINUTE, ?, NOW()) as elapsed_minutes
+              SELECT EXTRACT(EPOCH FROM (NOW() - ?)) / 60 as elapsed_minutes
             `, [expiryInfo.started_at]);
 
             if (elapsedTime.length > 0 && elapsedTime[0].elapsed_minutes > expiryInfo.time_limit_minutes) {
@@ -3286,7 +3286,7 @@ export const getStudentAttemptInfo = async (req, res) => {
     const accessQuery = `
       SELECT aa.*, a.* 
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -3374,7 +3374,7 @@ export const getAssessmentAttemptsHistory = async (req, res) => {
     const accessQuery = `
       SELECT aa.*, a.* 
       FROM assessment_assignments aa
-      JOIN assessment_templates a ON aa.assessment_id = a.id
+      JOIN assessments a ON aa.assessment_id = a.id
       WHERE aa.assessment_id = ? 
       AND (aa.target_id = ? OR aa.target_id IN (
         SELECT college_id FROM users WHERE id = ?
@@ -3473,7 +3473,7 @@ export const getAssessmentResults = async (req, res) => {
         a.time_limit_minutes as duration_minutes,
         a.passing_score
       FROM assessment_submissions sub
-      JOIN assessment_templates a ON sub.assessment_id = a.id
+      JOIN assessments a ON sub.assessment_id = a.id
       WHERE sub.assessment_id = ? AND sub.student_id = ?
       ORDER BY sub.submitted_at DESC
       LIMIT 1
@@ -3495,7 +3495,7 @@ export const getAssessmentResults = async (req, res) => {
 
     // Get assessment template to extract questions from sections
     const [assessmentTemplate] = await pool.query(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [assessment_id]
     );
 
@@ -3735,10 +3735,10 @@ export const getAssessmentInstances = async (req, res) => {
         a.created_at,
         a.proctoring_settings,
         a.require_proctoring,
-        DATE_FORMAT(aa.start_date_only, '%Y-%m-%d') as start_date_only,
-        TIME_FORMAT(aa.start_time_only, '%H:%i:%s') as start_time_only,
-        DATE_FORMAT(aa.end_date_only, '%Y-%m-%d') as end_date_only,
-        TIME_FORMAT(aa.end_time_only, '%H:%i:%s') as end_time_only,
+        TO_CHAR(aa.start_date_only, 'YYYY-MM-DD') as start_date_only,
+        TO_CHAR(aa.start_time_only, 'HH24:MI:SS') as start_time_only,
+        TO_CHAR(aa.end_date_only, 'YYYY-MM-DD') as end_date_only,
+        TO_CHAR(aa.end_time_only, 'HH24:MI:SS') as end_time_only,
         aa.assessment_timezone,
         aa.assignment_type,
         aa.target_id,
@@ -3750,7 +3750,7 @@ export const getAssessmentInstances = async (req, res) => {
         sub.started_at,
         sub.submitted_at,
         sub.attempt_number
-      FROM assessment_templates a
+      FROM assessments a
       INNER JOIN assessment_assignments aa ON a.id = aa.assessment_id
       LEFT JOIN assessment_submissions sub ON a.id = sub.assessment_id AND sub.student_id = ?
       WHERE (aa.target_id = ? OR aa.target_id IN (
@@ -3928,7 +3928,7 @@ export const debugAssessmentData = async (req, res) => {
 
     // Get assessment template data
     const [templateResult] = await pool.execute(
-      'SELECT * FROM assessment_templates WHERE id = ?',
+      'SELECT * FROM assessments WHERE id = ?',
       [assessment_id]
     );
 
@@ -3965,7 +3965,7 @@ export const retakeAssessment = async (req, res) => {
     // Get assessment details - try without assignment join first
     const [assessmentResult] = await pool.execute(
       `SELECT a.*, aa.start_date_only, aa.end_date_only, aa.start_time_only, aa.end_time_only, aa.assessment_timezone
-       FROM assessment_templates a
+       FROM assessments a
        LEFT JOIN assessment_assignments aa ON a.id = aa.assessment_id
        WHERE a.id = ?`,
       [assessment_id]
@@ -4041,7 +4041,7 @@ export const retakeAssessment = async (req, res) => {
       );
     } catch (error) {
       // If is_retake column doesn't exist, insert without it
-      if (error.code === 'ER_BAD_FIELD_ERROR' && error.message.includes('is_retake')) {
+      if ((error.code === 'ER_BAD_FIELD_ERROR' || error.code === '42703' || error.message?.includes('column') || error.message?.includes('does not exist')) && error.message.includes('is_retake')) {
         console.log('is_retake column not found, inserting without it');
         await pool.execute(
           `INSERT INTO assessment_submissions (
@@ -4252,7 +4252,7 @@ export const assignAssessmentToStudents = async (req, res) => {
     // Verify assessment exists and user has permission
     const assessmentQuery = `
       SELECT id, title, created_by 
-      FROM assessment_templates 
+      FROM assessments 
       WHERE id = ? AND (created_by = ? OR ? IN (SELECT id FROM users WHERE role = 'super_admin'))
     `;
     const [assessmentRows] = await pool.execute(assessmentQuery, [assessmentId, userId, userId]);
@@ -4286,7 +4286,7 @@ export const assignAssessmentToStudents = async (req, res) => {
       SELECT default_start_date_only, default_start_time_only, default_end_date_only, 
              default_end_time_only, default_assessment_timezone, default_early_access_hours, 
              default_late_submission_minutes
-      FROM assessment_templates 
+      FROM assessments 
       WHERE id = ?
     `;
     const [schedulingRows] = await pool.execute(schedulingQuery, [assessmentId]);
@@ -4360,7 +4360,7 @@ export const sendAssessmentReminders = async (req, res) => {
     // Verify assessment exists and user has permission
     const assessmentQuery = `
       SELECT at.id, at.title, at.created_by, at.scheduling
-      FROM assessment_templates at
+      FROM assessments at
       WHERE at.id = ? AND (at.created_by = ? OR ? IN (SELECT id FROM users WHERE role = 'super_admin'))
     `;
     const [assessmentRows] = await pool.execute(assessmentQuery, [assessment_id, userId, userId]);

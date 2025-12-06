@@ -226,7 +226,7 @@ export const processBulkUpload = async (req, res) => {
 
       // Get platform mappings (within transaction)
       const [platforms] = await connection.execute(
-        'SELECT id, name FROM coding_platforms WHERE is_active = TRUE'
+        'SELECT id, name FROM coding_platforms WHERE is_active = true'
       );
       const platformMap = {};
       platforms.forEach(platform => {
@@ -383,7 +383,7 @@ export const processBulkUpload = async (req, res) => {
                   // Create new profile (use connection within transaction)
                   const profileId = uuidv4();
                   await connection.execute(
-                    'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, sync_status) VALUES (?, ?, ?, ?, ?, "pending")',
+                    'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, sync_status) VALUES (?, ?, ?, ?, ?, \'pending\')',
                     [profileId, studentId, platformId, username.trim(), profileUrl]
                   );
                 }
@@ -490,7 +490,7 @@ export const bulkSyncProfiles = async (req, res) => {
       try {
         // Update sync status to syncing
         await pool.execute(
-          'UPDATE student_coding_profiles SET sync_status = "syncing", sync_error = NULL WHERE id = ?',
+          'UPDATE student_coding_profiles SET sync_status = \'syncing\', sync_error = NULL WHERE id = ?',
           [profile.id]
         );
 
@@ -504,7 +504,7 @@ export const bulkSyncProfiles = async (req, res) => {
       } catch (error) {
         // Update sync status to failed
         await pool.execute(
-          'UPDATE student_coding_profiles SET sync_status = "failed", sync_error = ? WHERE id = ?',
+          'UPDATE student_coding_profiles SET sync_status = \'failed\', sync_error = ? WHERE id = ?',
           [error.message, profile.id]
         );
 
@@ -554,7 +554,7 @@ export const getBulkUploadStats = async (req, res) => {
         COUNT(CASE WHEN scp.sync_status = 'success' THEN 1 END) as synced_count
       FROM coding_platforms cp
       LEFT JOIN student_coding_profiles scp ON cp.id = scp.platform_id
-      WHERE cp.is_active = TRUE
+      WHERE cp.is_active = true
       GROUP BY cp.id, cp.display_name
       ORDER BY profile_count DESC
     `);

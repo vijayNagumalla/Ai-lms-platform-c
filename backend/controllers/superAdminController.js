@@ -1,68 +1,75 @@
 import { pool } from '../config/database.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { getPlatformStatsSnapshot } from '../services/platformStatsService.js';
 
 // Get dashboard statistics
 export const getDashboardStats = async (req, res) => {
   try {
-    // Get total users
-    const [usersResult] = await pool.execute(
-      'SELECT COUNT(*) as total FROM users WHERE is_active = TRUE'
-    );
-    const totalUsers = usersResult[0].total;
-
-    // Get total colleges
-    const [collegesResult] = await pool.execute(
-      'SELECT COUNT(*) as total FROM colleges WHERE is_active = TRUE'
-    );
-    const totalColleges = collegesResult[0].total;
-
-    // Get total departments
-    const [departmentsResult] = await pool.execute(
-      'SELECT COUNT(*) as total FROM departments WHERE is_active = TRUE'
-    );
-    const totalDepartments = departmentsResult[0].total;
+    const {
+      activeUsers,
+      totalColleges,
+      totalDepartments,
+      totalAssessments,
+      totalSubmissions
+    } = await getPlatformStatsSnapshot();
+    const totalUsers = activeUsers;
 
     // Get recent activities
+    // Calculate date on application side - PostgreSQL compatible
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString();
+    
     const [recentActivities] = await pool.execute(`
       SELECT 
         'user' as type,
         'New user registered' as description,
         created_at
        FROM users 
-       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       WHERE created_at >= ?
        UNION ALL
        SELECT 
         'college' as type,
         'New college created' as description,
         created_at
       FROM colleges
-       WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+       WHERE created_at >= ?
       ORDER BY created_at DESC
       LIMIT 10
-    `);
+    `, [sevenDaysAgoStr, sevenDaysAgoStr]);
 
     // Get user growth over time
+    // Calculate date on application side - PostgreSQL compatible
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+    
     const [userGrowthResult] = await pool.execute(`
       SELECT 
         DATE(created_at) as date,
         COUNT(*) as count
       FROM users
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE created_at >= ?
       GROUP BY DATE(created_at)
       ORDER BY date
-    `);
+    `, [thirtyDaysAgoStr]);
 
     // Get college growth over time
+    // Calculate date on application side - PostgreSQL compatible
+    const thirtyDaysAgoColleges = new Date();
+    thirtyDaysAgoColleges.setDate(thirtyDaysAgoColleges.getDate() - 30);
+    const thirtyDaysAgoCollegesStr = thirtyDaysAgoColleges.toISOString();
+    
     const [collegeGrowthResult] = await pool.execute(`
       SELECT 
         DATE(created_at) as date,
         COUNT(*) as count
       FROM colleges
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE created_at >= ?
       GROUP BY DATE(created_at)
       ORDER BY date
-    `);
+    `, [thirtyDaysAgoCollegesStr]);
 
     res.json({
       success: true,
@@ -70,6 +77,9 @@ export const getDashboardStats = async (req, res) => {
         totalUsers,
         totalColleges,
         totalDepartments,
+        totalAssessments,
+        totalSubmissions,
+        activeUsers,
         recentActivities,
         userGrowth: userGrowthResult,
         collegeGrowth: collegeGrowthResult,
@@ -91,10 +101,10 @@ export const getAllColleges = async (req, res) => {
     const [colleges] = await pool.execute(`
       SELECT 
         c.*,
-        (SELECT COUNT(*) FROM users WHERE college_id = c.id AND is_active = TRUE) as user_count,
-        (SELECT COUNT(*) FROM departments WHERE college_id = c.id AND is_active = TRUE) as department_count
+        (SELECT COUNT(*) FROM users WHERE college_id = c.id AND is_active = true) as user_count,
+        (SELECT COUNT(*) FROM departments WHERE college_id = c.id AND is_active = true) as department_count
       FROM colleges c
-      WHERE c.is_active = TRUE
+      WHERE c.is_active = true
       ORDER BY c.created_at DESC
     `);
 
@@ -120,10 +130,10 @@ export const getCollegeDetails = async (req, res) => {
     const [colleges] = await pool.execute(`
       SELECT 
         c.*,
-        (SELECT COUNT(*) FROM users WHERE college_id = c.id AND is_active = TRUE) as user_count,
-        (SELECT COUNT(*) FROM departments WHERE college_id = c.id AND is_active = TRUE) as department_count
+        (SELECT COUNT(*) FROM users WHERE college_id = c.id AND is_active = true) as user_count,
+        (SELECT COUNT(*) FROM departments WHERE college_id = c.id AND is_active = true) as department_count
       FROM colleges c
-      WHERE c.id = ? AND c.is_active = TRUE
+      WHERE c.id = ? AND c.is_active = true
     `, [id]);
 
     if (colleges.length === 0) {
@@ -139,7 +149,7 @@ export const getCollegeDetails = async (req, res) => {
     const [recentUsers] = await pool.query(`
       SELECT id, name, email, role, created_at
       FROM users
-      WHERE college_id = ? AND is_active = TRUE
+      WHERE college_id = ? AND is_active = true
       ORDER BY created_at DESC
       LIMIT 5
     `, [id]);
@@ -150,7 +160,7 @@ export const getCollegeDetails = async (req, res) => {
     const [recentDepartments] = await pool.query(`
       SELECT id, name, description, created_at
       FROM departments
-      WHERE college_id = ? AND is_active = TRUE
+      WHERE college_id = ? AND is_active = true
       ORDER BY created_at DESC
       LIMIT 5
     `, [id]);
@@ -186,7 +196,7 @@ export const createCollege = async (req, res) => {
 
     // Check if college code already exists
     const [existing] = await pool.execute(
-      'SELECT id FROM colleges WHERE code = ? AND is_active = TRUE',
+      'SELECT id FROM colleges WHERE code = ? AND is_active = true',
       [code]
     );
 
@@ -226,7 +236,7 @@ export const updateCollege = async (req, res) => {
 
     // Check if college exists
     const [existing] = await pool.execute(
-      'SELECT id FROM colleges WHERE id = ? AND is_active = TRUE',
+      'SELECT id FROM colleges WHERE id = ? AND is_active = true',
       [id]
     );
 
@@ -240,7 +250,7 @@ export const updateCollege = async (req, res) => {
     // Check if code is being changed and if it already exists
     if (code) {
       const [codeExists] = await pool.execute(
-        'SELECT id FROM colleges WHERE code = ? AND id != ? AND is_active = TRUE',
+        'SELECT id FROM colleges WHERE code = ? AND id != ? AND is_active = true',
         [code, id]
       );
 
@@ -313,7 +323,7 @@ export const deleteCollege = async (req, res) => {
 
     // Check if college has active users
     const [activeUsers] = await pool.query(
-      'SELECT COUNT(*) as count FROM users WHERE college_id = ? AND is_active = TRUE',
+      'SELECT COUNT(*) as count FROM users WHERE college_id = ? AND is_active = true',
       [id]
     );
 
@@ -327,7 +337,7 @@ export const deleteCollege = async (req, res) => {
 
     // Check if college has active departments
     const [activeDepartments] = await pool.query(
-      'SELECT COUNT(*) as count FROM departments WHERE college_id = ? AND is_active = TRUE',
+      'SELECT COUNT(*) as count FROM departments WHERE college_id = ? AND is_active = true',
       [id]
     );
 
@@ -441,7 +451,7 @@ export const getAllUsers = async (req, res) => {
         c.code as college_code
       FROM users u
       LEFT JOIN colleges c ON u.college_id = c.id
-      WHERE u.is_active = TRUE
+      WHERE u.is_active = true
       ORDER BY u.created_at DESC
     `);
 
@@ -471,7 +481,7 @@ export const getUserDetails = async (req, res) => {
         c.code as college_code
       FROM users u
       LEFT JOIN colleges c ON u.college_id = c.id
-      WHERE u.id = ? AND u.is_active = TRUE
+      WHERE u.id = ? AND u.is_active = true
     `, [id]);
 
     if (users.length === 0) {
@@ -517,7 +527,7 @@ export const updateUser = async (req, res) => {
     // Check if email is being changed and if it already exists
     if (email) {
       const [emailExists] = await pool.execute(
-        'SELECT id FROM users WHERE email = ? AND id != ? AND is_active = TRUE',
+        'SELECT id FROM users WHERE email = ? AND id != ? AND is_active = true',
         [email, id]
       );
 
@@ -619,7 +629,7 @@ export const restoreCollege = async (req, res) => {
 
     // Check if the college code is already in use by another active college
     const [codeConflict] = await pool.execute(
-      'SELECT id, name FROM colleges WHERE code = ? AND is_active = TRUE AND id != ?',
+      'SELECT id, name FROM colleges WHERE code = ? AND is_active = true AND id != ?',
       [collegeCode, id]
     );
 
@@ -638,13 +648,13 @@ export const restoreCollege = async (req, res) => {
     try {
       // Restore the college
       await connection.execute(
-        'UPDATE colleges SET is_active = TRUE, deleted_at = NULL WHERE id = ?',
+        'UPDATE colleges SET is_active = true, deleted_at = NULL WHERE id = ?',
         [id]
       );
 
       // Restore departments
       await connection.execute(
-        'UPDATE departments SET is_active = TRUE WHERE college_id = ?',
+        'UPDATE departments SET is_active = true WHERE college_id = ?',
         [id]
       );
 
@@ -737,12 +747,12 @@ export const getCollegeDeletionStatus = async (req, res) => {
 
     // Get dependency counts
     const [userCount] = await pool.execute(
-      'SELECT COUNT(*) as count FROM users WHERE college_id = ? AND is_active = TRUE',
+      'SELECT COUNT(*) as count FROM users WHERE college_id = ? AND is_active = true',
       [id]
     );
 
     const [departmentCount] = await pool.execute(
-      'SELECT COUNT(*) as count FROM departments WHERE college_id = ? AND is_active = TRUE',
+      'SELECT COUNT(*) as count FROM departments WHERE college_id = ? AND is_active = true',
       [id]
     );
 

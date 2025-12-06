@@ -1027,7 +1027,7 @@ const CodingProfilesManagementPage = () => {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Colleges</SelectItem>
-                      {colleges && Array.isArray(colleges) && colleges.map((college) => (
+                      {colleges && Array.isArray(colleges) && colleges.filter(college => college?.id != null).map((college) => (
                         <SelectItem key={college.id} value={college.id.toString()}>
                           {college.name}
                         </SelectItem>
@@ -1251,7 +1251,7 @@ const CodingProfilesManagementPage = () => {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All Colleges</SelectItem>
-                          {colleges && Array.isArray(colleges) && colleges.map((college) => (
+                          {colleges && Array.isArray(colleges) && colleges.filter(college => college?.id != null).map((college) => (
                             <SelectItem key={college.id} value={college.id.toString()}>
                               {college.name}
                             </SelectItem>
@@ -1367,7 +1367,7 @@ const CodingProfilesManagementPage = () => {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Colleges</SelectItem>
-                      {colleges && Array.isArray(colleges) && colleges.map((college) => (
+                      {colleges && Array.isArray(colleges) && colleges.filter(college => college?.id != null).map((college) => (
                         <SelectItem key={college.id} value={college.id.toString()}>
                           {college.name}
                         </SelectItem>

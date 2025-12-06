@@ -349,7 +349,7 @@ const EnhancedSuperAdminDashboard = () => {
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
         {stats.map((stat, index) => (
-          <motion.div key={index} custom={index} initial="hidden" animate="visible" variants={cardVariants}>
+          <motion.div key={`stat-${stat.title || index}-${index}`} custom={index} initial="hidden" animate="visible" variants={cardVariants}>
             <Card className={`shadow-lg hover:shadow-xl transition-shadow duration-300 ${stat.color} border-primary/20`}>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">{stat.title}</CardTitle>
@@ -390,7 +390,7 @@ const EnhancedSuperAdminDashboard = () => {
               </CardHeader>
               <CardContent className="grid gap-3">
                 {actions.map((action, index) => (
-                  <Button key={index} variant="outline" className="justify-start py-6 text-left hover:bg-accent/50 transition-colors duration-300 border-primary/30" asChild>
+                  <Button key={`action-${action.label || index}-${index}`} variant="outline" className="justify-start py-6 text-left hover:bg-accent/50 transition-colors duration-300 border-primary/30" asChild>
                     <Link to={action.linkTo}>{action.icon}<span className="text-md font-medium">{action.label}</span></Link>
                   </Button>
                 ))}
@@ -407,8 +407,8 @@ const EnhancedSuperAdminDashboard = () => {
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {recentActivities.map((activity) => (
-                    <div key={activity.id} className="flex items-center gap-4 p-3 border rounded-lg hover:bg-accent/50 transition-colors">
+                  {recentActivities.map((activity, index) => (
+                    <div key={activity.id || `activity-${index}`} className="flex items-center gap-4 p-3 border rounded-lg hover:bg-accent/50 transition-colors">
                       <div className="p-2 bg-blue-100 rounded-lg">{activity.icon}</div>
                       <div className="flex-1">
                         <h4 className="font-medium">{activity.title}</h4>
@@ -443,8 +443,8 @@ const EnhancedSuperAdminDashboard = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {collegeStats.map((college) => (
-                    <div key={college.id} className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent/50 transition-colors">
+                  {collegeStats.map((college, index) => (
+                    <div key={college.id || `college-${index}`} className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent/50 transition-colors">
                       <div className="flex items-center gap-4">
                         <div className="p-2 bg-green-100 rounded-lg">
                           <Building className="h-4 w-4 text-green-600" />
@@ -480,7 +480,7 @@ const EnhancedSuperAdminDashboard = () => {
               <CardContent>
                 <div className="space-y-4">
                   {userStats.byRole.map((item, index) => (
-                    <div key={index} className="space-y-2">
+                    <div key={`role-${item.role || index}-${index}`} className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">{item.role}</span>
                         <span className="text-sm text-muted-foreground">{item.count} users</span>
@@ -503,7 +503,7 @@ const EnhancedSuperAdminDashboard = () => {
               <CardContent>
                 <div className="space-y-4">
                   {userStats.byCollege.map((item, index) => (
-                    <div key={index} className="space-y-2">
+                    <div key={`college-${item.college || index}-${index}`} className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">{item.college}</span>
                         <span className="text-sm text-muted-foreground">{item.count} users</span>

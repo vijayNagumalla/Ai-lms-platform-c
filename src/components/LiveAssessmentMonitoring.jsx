@@ -20,6 +20,7 @@ import {
     Play
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { getWebSocketUrl, getApiBaseUrl } from '../utils/apiConfig';
 
 const LiveAssessmentMonitoring = ({ assessmentId, userRole }) => {
     const [monitoringData, setMonitoringData] = useState(null);
@@ -50,7 +51,7 @@ const LiveAssessmentMonitoring = ({ assessmentId, userRole }) => {
             wsRef.current.close();
         }
         
-        wsRef.current = new WebSocket(`ws://localhost:5000/ws/assessment/${assessmentId}`);
+        wsRef.current = new WebSocket(getWebSocketUrl(`ws/assessment/${assessmentId}`));
         
         wsRef.current.onopen = () => {
             console.log('WebSocket connected');
@@ -91,7 +92,8 @@ const LiveAssessmentMonitoring = ({ assessmentId, userRole }) => {
 
     const loadMonitoringData = async () => {
         try {
-            const response = await fetch('/api/analytics/live-monitoring', {
+            const apiBaseUrl = getApiBaseUrl();
+            const response = await fetch(`${apiBaseUrl}/analytics/live-monitoring`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ assessmentId })

@@ -222,7 +222,7 @@ class AnalyticsService {
                     SUM(CASE WHEN sr.is_correct = 1 THEN 1 ELSE 0 END) as correct_answers,
                     AVG(sr.time_spent) as avg_time_per_question
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 LEFT JOIN colleges c ON a.college_id = c.id
                 LEFT JOIN departments d ON a.department_id = d.id
                 LEFT JOIN batches b ON a.batch_id = b.id
@@ -264,7 +264,7 @@ class AnalyticsService {
             let countQuery = `
                 SELECT COUNT(DISTINCT s.id) as total
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 WHERE s.student_id = ? AND (s.status = 'submitted' OR s.status = 'graded')
             `;
             const countParams = [studentId];
@@ -309,7 +309,7 @@ class AnalyticsService {
                     COUNT(CASE WHEN s.grade = 'D' THEN 1 END) as grade_d_count,
                     COUNT(CASE WHEN s.grade = 'F' THEN 1 END) as grade_f_count
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 WHERE s.student_id = ? AND (s.status = 'submitted' OR s.status = 'graded')
             `;
             const metricsParams = [studentId];
@@ -629,7 +629,7 @@ class AnalyticsService {
                     COUNT(CASE WHEN s.grade = 'D' THEN 1 END) as grade_d_count,
                     COUNT(CASE WHEN s.grade = 'F' THEN 1 END) as grade_f_count
                 FROM assessment_submissions s
-                LEFT JOIN assessment_templates a ON s.assessment_id = a.id
+                LEFT JOIN assessments a ON s.assessment_id = a.id
                 LEFT JOIN colleges c ON a.college_id = c.id
                 LEFT JOIN departments d ON a.department_id = d.id
                 LEFT JOIN batches b ON a.batch_id = b.id

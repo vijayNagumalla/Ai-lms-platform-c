@@ -20,7 +20,8 @@ import {
   // Assessment details
   getAssessmentDetails,
   // Student submissions
-  getAssessmentStudentSubmissions
+  getAssessmentStudentSubmissions,
+  getPublicStats
 } from '../controllers/analyticsController.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { validateCSRFToken } from '../middleware/csrf.js';
@@ -29,6 +30,7 @@ const router = express.Router();
 
 // Test connection (no authentication required)
 router.get('/test', testAnalyticsConnection);
+router.get('/public-stats', getPublicStats);
 
 
 // Apply authentication middleware to all other routes

@@ -30,8 +30,8 @@ export const generateCSRFToken = async (req, res, next) => {
       await db.execute(
         `INSERT INTO csrf_tokens (user_id, token, expires_at, created_at) 
          VALUES (?, ?, ?, NOW())
-         ON DUPLICATE KEY UPDATE token = ?, expires_at = ?, created_at = NOW()`,
-        [req.user.id, token, expiresAt, token, expiresAt]
+         ON CONFLICT (user_id) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED.expires_at, created_at = NOW()`,
+        [req.user.id, token, expiresAt]
       );
     } catch (dbError) {
       // If table doesn't exist, create it
@@ -142,7 +142,7 @@ export const validateCSRFToken = async (req, res, next) => {
     console.error('Error validating CSRF token:', error);
     
     // If table doesn't exist, create it and allow request (first-time setup)
-    if (error.code === 'ER_NO_SUCH_TABLE') {
+    if (error.code === 'ER_NO_SUCH_TABLE' || error.code === '42P01' || error.code === 'PGRST205' || error.message?.includes('does not exist')) {
       console.warn('CSRF tokens table not found. Creating...');
       await createCSRFTokensTable();
       // Allow first request after table creation
@@ -163,17 +163,18 @@ async function createCSRFTokensTable() {
   try {
     await db.execute(`
       CREATE TABLE IF NOT EXISTS csrf_tokens (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+        id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id VARCHAR(36) NOT NULL,
         token VARCHAR(255) NOT NULL,
         expires_at TIMESTAMP NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_user_token (user_id, token),
-        INDEX idx_expires_at (expires_at),
-        UNIQUE KEY unique_user_token (user_id, token),
+        UNIQUE (user_id, token),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+    // Create indexes separately (PostgreSQL syntax)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_csrf_tokens_user_token ON csrf_tokens(user_id, token)`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_csrf_tokens_expires_at ON csrf_tokens(expires_at)`);
     console.log('CSRF tokens table created successfully');
   } catch (error) {
     // Table might already exist, ignore if so

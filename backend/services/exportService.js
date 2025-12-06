@@ -419,7 +419,7 @@ class ExportService {
     // Helper methods for data retrieval
     async getAssessmentDetails(assessmentId) {
         // CRITICAL FIX: Use correct table name
-        const query = 'SELECT * FROM assessment_templates WHERE id = ?';
+        const query = 'SELECT * FROM assessments WHERE id = ?';
         const [results] = await db.execute(query, [assessmentId]);
         return results[0];
     }
@@ -491,7 +491,7 @@ class ExportService {
                 s.time_taken_minutes,
                 s.attempt_number
             FROM assessment_submissions s
-            JOIN assessment_templates a ON s.assessment_id = a.id
+            JOIN assessments a ON s.assessment_id = a.id
             WHERE s.student_id = ?
             ORDER BY s.submitted_at DESC
             LIMIT ${maxRecords}
@@ -542,7 +542,7 @@ class ExportService {
                 s.submitted_at
             FROM assessment_submissions s
             JOIN users u ON s.student_id = u.id
-            JOIN assessment_templates a ON s.assessment_id = a.id
+            JOIN assessments a ON s.assessment_id = a.id
             WHERE u.batch_id = ? AND u.department_id = ?
             ORDER BY s.submitted_at DESC
             LIMIT ${maxRecords}
@@ -651,7 +651,7 @@ class ExportService {
                 AVG(s.percentage_score) as average_score,
                 COUNT(CASE WHEN s.status IN ('submitted', 'graded') THEN 1 END) as completed_count,
                 COUNT(CASE WHEN s.status = 'in_progress' THEN 1 END) as in_progress_count
-            FROM assessment_templates a
+            FROM assessments a
             LEFT JOIN assessment_submissions s ON a.id = s.assessment_id
             GROUP BY a.id, a.title
             ORDER BY a.created_at DESC
@@ -668,7 +668,7 @@ class ExportService {
                 COUNT(*) as submissions,
                 AVG(s.percentage_score) as average_score
             FROM assessment_submissions s
-            WHERE s.submitted_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            WHERE s.submitted_at >= NOW() - INTERVAL '30 days'
             GROUP BY DATE(s.submitted_at)
             ORDER BY date DESC
         `;

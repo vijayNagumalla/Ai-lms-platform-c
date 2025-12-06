@@ -7,8 +7,8 @@ class AccessControlService {
         try {
             const query = `
                 SELECT password_protected, access_password 
-                FROM assessment_templates 
-                WHERE id = ? AND status = 'published'
+                FROM assessments 
+                WHERE id = ? AND is_published = true
             `;
             const [results] = await db.execute(query, [assessmentId]);
             
@@ -44,8 +44,8 @@ class AccessControlService {
         try {
             const query = `
                 SELECT ip_restrictions 
-                FROM assessment_templates 
-                WHERE id = ? AND status = 'published'
+                FROM assessments 
+                WHERE id = ? AND is_published = true
             `;
             const [results] = await db.execute(query, [assessmentId]);
             
@@ -88,8 +88,8 @@ class AccessControlService {
         try {
             const query = `
                 SELECT device_restrictions 
-                FROM assessment_templates 
-                WHERE id = ? AND status = 'published'
+                FROM assessments 
+                WHERE id = ? AND is_published = true
             `;
             const [results] = await db.execute(query, [assessmentId]);
             
@@ -150,8 +150,8 @@ class AccessControlService {
         try {
             const query = `
                 SELECT scheduling, time_restrictions 
-                FROM assessment_templates 
-                WHERE id = ? AND status = 'published'
+                FROM assessments 
+                WHERE id = ? AND is_published = true
             `;
             const [results] = await db.execute(query, [assessmentId]);
             
@@ -226,9 +226,9 @@ class AccessControlService {
         try {
             const query = `
                 SELECT a.*, u.batch_id, u.department_id, u.college_id
-                FROM assessment_templates a
+                FROM assessments a
                 JOIN users u ON u.id = ?
-                WHERE a.id = ? AND a.status = 'published'
+                WHERE a.id = ? AND a.is_published = true
             `;
             const [results] = await db.execute(query, [userId, assessmentId]);
             
@@ -360,8 +360,8 @@ class AccessControlService {
                     department_restrictions,
                     college_restrictions,
                     scheduling
-                FROM assessment_templates 
-                WHERE id = ? AND status = 'published'
+                FROM assessments 
+                WHERE id = ? AND is_published = true
             `;
             const [results] = await db.execute(query, [assessmentId]);
             

@@ -67,6 +67,11 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Security middleware (CRITICAL SECURITY FIX)
+// Build connectSrc array from environment variables
+const frontendUrls = process.env.FRONTEND_URL 
+  ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
+  : (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:5173', 'http://localhost:5174']);
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -75,7 +80,7 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // 'unsafe-eval' needed for some React features
       imgSrc: ["'self'", "data:", "https:", "blob:"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      connectSrc: ["'self'", process.env.FRONTEND_URL || "http://localhost:5173", "http://localhost:5174"],
+      connectSrc: ["'self'", ...frontendUrls, "https:"], // Allow HTTPS connections
       frameSrc: ["'none'"], // Prevent iframe embedding
       objectSrc: ["'none'"], // Prevent object/embed tags
       baseUri: ["'self'"], // Restrict base tag
@@ -100,7 +105,9 @@ app.use(helmet({
 // CORS configuration (CRITICAL SECURITY FIX)
 const allowedOrigins = process.env.FRONTEND_URL 
   ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
-  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000'];
+  : (process.env.NODE_ENV === 'production' 
+      ? [] // No localhost in production - must set FRONTEND_URL
+      : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000']);
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -321,43 +328,6 @@ const server = app.listen(PORT, () => {
       logger.error('Error cleaning up export files', { error: error.message });
     }
   }, 6 * 60 * 60 * 1000); // Run every 6 hours
-  
-  // Schedule monthly invoice generation (runs on 25th of every month at 00:00)
-  import('./services/invoiceService.js').then(invoiceService => {
-    // Check if it's the 25th and run immediately if so
-    const now = new Date();
-    if (now.getDate() === 25) {
-      invoiceService.default.generateMonthlyInvoices().catch(err => {
-        logger.error('Error during initial invoice generation', { error: err.message });
-      });
-    }
-    
-    // Schedule to run on 25th of every month at 00:00
-    const scheduleMonthlyInvoice = () => {
-      const now = new Date();
-      const nextRun = new Date(now.getFullYear(), now.getMonth(), 25, 0, 0, 0);
-      
-      // If 25th has passed this month, schedule for next month
-      if (nextRun < now) {
-        nextRun.setMonth(nextRun.getMonth() + 1);
-      }
-      
-      const msUntilRun = nextRun.getTime() - now.getTime();
-      
-      setTimeout(() => {
-        invoiceService.default.generateMonthlyInvoices().catch(err => {
-          logger.error('Error in scheduled invoice generation', { error: err.message });
-        });
-        
-        // Schedule for next month
-        scheduleMonthlyInvoice();
-      }, msUntilRun);
-      
-      logger.info(`Monthly invoice generation scheduled for ${nextRun.toISOString()}`);
-    };
-    
-    scheduleMonthlyInvoice();
-  });
   
   // Run cleanup once on startup
   exportService.cleanupOldExports(24).catch(err => {

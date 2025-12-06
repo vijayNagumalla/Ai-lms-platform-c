@@ -32,6 +32,11 @@ A comprehensive **Artificial Intelligence-powered Learning Management System** b
 - **Faculty**: Course and assessment creation
 - **Students**: Assessment taking and progress tracking
 
+### 🤖 **Gemini AI Assistant**
+- **Context-Aware Chatbot**: Embedded Gemini-powered assistant that surfaces data based on the signed-in role.
+- **Role-Based Retrieval**: Automatically scopes analytics, risk alerts, or student progress to the user’s permissions.
+- **Actionable Insights**: Suggests next steps, reminders, and interventions directly within the LMS workspace.
+
 ### 🏫 **Institutional Management**
 - **College Management**: Multi-college support with individual configurations
 - **Department Organization**: Academic structure management
@@ -476,34 +481,6 @@ VITE_API_URL=http://localhost:5000/api
 - **Batch Processing** - Bulk operations for exports and emails
 - **Streaming** - Large file exports use streaming to prevent memory issues
 
-## 🎯 Enhanced Features
-
-### **Attendance Management**
-- **Multiple Methods**: Manual, QR Code, Biometric, GPS-based attendance
-- **QR Code Security**: Expiration (15 minutes), one-time use tokens
-- **GPS Validation**: Accuracy threshold checking, spoofing detection
-- **Real-time Tracking**: Live attendance monitoring and analytics
-- **Bulk Operations**: Efficient attendance marking for multiple students
-
-### **Course Management**
-- **Course Creation**: Full CRUD operations for courses
-- **Faculty Assignment**: Assign faculty to courses
-- **Enrollment Tracking**: Student enrollment management
-- **Progress Analytics**: Course performance metrics and reporting
-
-### **Class Scheduling**
-- **Visual Calendar**: Day, Week, and Month views
-- **Room Allocation**: Resource management and booking
-- **Conflict Detection**: Automatic scheduling conflict detection
-- **Workload Balancing**: Faculty workload analysis and optimization
-
-### **Faculty Status Management**
-- **Real-time Status**: Available, Busy, Away, Offline tracking
-- **Location Tracking**: On-campus, Remote, Off-campus status
-- **Availability Schedules**: Faculty availability management
-- **Workload Analytics**: Comprehensive workload monitoring
-
-> **📖 Enhanced Features Guide**: See [ENHANCED_FEATURES_README.md](ENHANCED_FEATURES_README.md) for detailed documentation.
 
 ## 📝 Assessment Taking System
 

@@ -503,8 +503,8 @@ class SecurityService {
                 INSERT INTO data_integrity 
                 (table_name, record_id, hash, created_at)
                 VALUES (?, ?, ?, NOW())
-                ON DUPLICATE KEY UPDATE
-                hash = VALUES(hash),
+                ON CONFLICT (table_name, record_id) DO UPDATE SET
+                hash = EXCLUDED.hash,
                 updated_at = NOW()
             `;
             

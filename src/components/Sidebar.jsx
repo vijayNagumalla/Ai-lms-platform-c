@@ -17,11 +17,8 @@ import {
   FileText,
   BarChart3,
   UserCheck,
-  Calendar,
-  GraduationCap,
   Shield,
-  ChevronDown,
-  FolderKanban
+  ChevronDown
 } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuGroup, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { useTheme } from '@/components/ThemeProvider';
@@ -69,30 +66,6 @@ const Sidebar = ({ onMobileClose }) => {
     if (path === '/admin/users') {
       return location.pathname.startsWith('/admin/users');
     }
-    if (path === '/dashboard/super-admin/courses') {
-      return location.pathname.startsWith('/dashboard/super-admin/courses');
-    }
-    if (path === '/dashboard/super-admin/attendance') {
-      return location.pathname.startsWith('/dashboard/super-admin/attendance');
-    }
-    if (path === '/dashboard/super-admin/scheduling') {
-      return location.pathname.startsWith('/dashboard/super-admin/scheduling');
-    }
-    if (path === '/dashboard/super-admin/faculty-status') {
-      return location.pathname.startsWith('/dashboard/super-admin/faculty-status');
-    }
-    if (path === '/dashboard/super-admin/project-management') {
-      return location.pathname.startsWith('/dashboard/super-admin/project-management');
-    }
-    if (path === '/dashboard/college-admin/project-management') {
-      return location.pathname.startsWith('/dashboard/college-admin/project-management');
-    }
-    if (path === '/dashboard/faculty/project-management') {
-      return location.pathname.startsWith('/dashboard/faculty/project-management');
-    }
-    if (path === '/dashboard/student/project-management') {
-      return location.pathname.startsWith('/dashboard/student/project-management');
-    }
     if (path === '/analytics/dashboard') {
       return location.pathname.startsWith('/analytics');
     }
@@ -136,12 +109,6 @@ const Sidebar = ({ onMobileClose }) => {
       roles: ['super-admin']
     },
     {
-      title: "Course Management",
-      href: "/dashboard/super-admin/courses",
-      icon: BookMarked,
-      roles: ['super-admin']
-    },
-    {
       title: "Assessments",
       href: "/assessments",
       icon: CheckSquare,
@@ -165,53 +132,10 @@ const Sidebar = ({ onMobileClose }) => {
       icon: User,
       roles: ['super-admin', 'college-admin', 'faculty', 'student']
     },
-    {
-      title: "Project Management",
-      href: "/dashboard/college-admin/project-management",
-      icon: FolderKanban,
-      roles: ['college-admin']
-    },
-    {
-      title: "Project Management",
-      href: "/dashboard/faculty/project-management",
-      icon: FolderKanban,
-      roles: ['faculty']
-    },
-    {
-      title: "Project Management",
-      href: "/dashboard/student/project-management",
-      icon: FolderKanban,
-      roles: ['student']
-    }
   ];
 
-  // Administration submenu items
-  const administrationItems = [
-    {
-      title: "Project Management",
-      href: "/dashboard/super-admin/project-management",
-      icon: FolderKanban,
-      roles: ['super-admin']
-    },
-    {
-      title: "Attendance",
-      href: "/dashboard/super-admin/attendance",
-      icon: UserCheck,
-      roles: ['super-admin']
-    },
-    {
-      title: "Class Scheduling",
-      href: "/dashboard/super-admin/scheduling",
-      icon: Calendar,
-      roles: ['super-admin']
-    },
-    {
-      title: "Faculty Status",
-      href: "/dashboard/super-admin/faculty-status",
-      icon: GraduationCap,
-      roles: ['super-admin']
-    }
-  ];
+  // Administration submenu items (removed - features deleted)
+  const administrationItems = [];
 
   const filteredNavigationItems = navigationItems.filter(item => 
     item.roles.includes(user?.role)
@@ -252,15 +176,6 @@ const Sidebar = ({ onMobileClose }) => {
           // Handle role-specific routes
           if (item.title === "Assessments" && user?.role === 'student') {
             href = "/student/assessments";
-          } else if (item.title === "Project Management") {
-            // Set href based on user role
-            if (user?.role === 'college-admin') {
-              href = "/dashboard/college-admin/project-management";
-            } else if (user?.role === 'faculty') {
-              href = "/dashboard/faculty/project-management";
-            } else if (user?.role === 'student') {
-              href = "/dashboard/student/project-management";
-            }
           }
           
           return (

@@ -19,6 +19,7 @@ import {
     XCircle
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { getWebSocketUrl, getApiBaseUrl } from '../utils/apiConfig';
 
 const PerformanceAlerts = ({ 
     assessmentId, 
@@ -62,7 +63,7 @@ const PerformanceAlerts = ({
             wsRef.current.close();
         }
         
-        wsRef.current = new WebSocket(`ws://localhost:5000/ws/alerts/${assessmentId}`);
+        wsRef.current = new WebSocket(getWebSocketUrl(`ws/alerts/${assessmentId}`));
         
         wsRef.current.onopen = () => {
             console.log('Alerts WebSocket connected');
@@ -103,7 +104,8 @@ const PerformanceAlerts = ({
 
     const loadAlerts = async () => {
         try {
-            const response = await fetch('/api/analytics/performance-alerts', {
+            const apiBaseUrl = getApiBaseUrl();
+            const response = await fetch(`${apiBaseUrl}/analytics/performance-alerts`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -208,7 +210,8 @@ const PerformanceAlerts = ({
 
     const markAlertAsRead = async (alertId) => {
         try {
-            const response = await fetch('/api/analytics/mark-alert-read', {
+            const apiBaseUrl = getApiBaseUrl();
+            const response = await fetch(`${apiBaseUrl}/analytics/mark-alert-read`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ alertId })
@@ -229,7 +232,8 @@ const PerformanceAlerts = ({
 
     const updateAlertSettings = async (newSettings) => {
         try {
-            const response = await fetch('/api/analytics/update-alert-settings', {
+            const apiBaseUrl = getApiBaseUrl();
+            const response = await fetch(`${apiBaseUrl}/analytics/update-alert-settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 

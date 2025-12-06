@@ -796,16 +796,30 @@ export const changeUserPassword = async (req, res) => {
 // 10. Update student years (Super Admin only)
 export const updateStudentYears = async (req, res) => {
   try {
-    // First calculate current years based on joining and final years
-    await pool.query('CALL CalculateCurrentYear()');
-
-    // Then update years for eligible students
-    const [result] = await pool.query('CALL UpdateStudentYears()');
+    // PostgreSQL: Stored procedures need to be converted to functions or executed as SQL
+    // For now, calculate current year in application code
+    const currentYear = new Date().getFullYear();
+    
+    // Update student years based on joining_year and final_year
+    // PostgreSQL equivalent: Execute as a function or inline SQL
+    const [result] = await pool.query(`
+      UPDATE users 
+      SET year = CASE 
+        WHEN joining_year IS NOT NULL AND final_year IS NOT NULL THEN
+          CASE 
+            WHEN EXTRACT(YEAR FROM CURRENT_DATE) <= final_year THEN
+              EXTRACT(YEAR FROM CURRENT_DATE) - joining_year + 1
+            ELSE final_year - joining_year + 1
+          END
+        ELSE year
+      END
+      WHERE role = 'student' AND (joining_year IS NOT NULL OR final_year IS NOT NULL)
+    `);
 
     res.json({
       success: true,
       message: 'Student years updated successfully',
-      data: result[0][0] // The result from the stored procedure
+      data: { affectedRows: result[0]?.affectedRows || 0 } // Result from UPDATE query
     });
   } catch (error) {
     console.error('Update student years error:', error);

@@ -41,8 +41,8 @@ const TimerComponent = forwardRef(({
     try {
       setSyncStatus('syncing');
       const token = localStorage.getItem('token') || localStorage.getItem('lmsToken');
-      const apiBaseUrl = import.meta.env.VITE_API_URL || 
-        (import.meta.env.PROD ? '/api' : 'http://localhost:5000/api');
+      const { getApiBaseUrl } = await import('../../utils/apiConfig');
+      const apiBaseUrl = getApiBaseUrl();
       
       const response = await fetch(`${apiBaseUrl}/student-assessments/${submissionId}/time-remaining`, {
         headers: {

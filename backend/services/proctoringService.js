@@ -5,6 +5,8 @@ class ProctoringService {
     constructor() {
         // CRITICAL FIX: Initialize encryption service for sensitive proctoring data
         this.securityService = securityService;
+        this.consentTableChecked = false;
+        this.consentTableAvailable = false;
     }
     
     // CRITICAL FIX: GDPR/Privacy compliance - Data retention period (90 days)
@@ -14,16 +16,19 @@ class ProctoringService {
     async logProctoringConsent(submissionId, userId, consentData = {}) {
         try {
             // Check if consent table exists, create if not
-            await this.ensureConsentTableExists();
+            const consentTableReady = await this.ensureConsentTableExists();
+            if (!consentTableReady) {
+                return { logged: false, error: 'Consent table missing in Supabase' };
+            }
             
             const query = `
                 INSERT INTO proctoring_consents 
                 (submission_id, user_id, consent_given, consent_type, consent_timestamp, metadata)
                 VALUES (?, ?, ?, ?, NOW(), ?)
-                ON DUPLICATE KEY UPDATE
-                    consent_given = VALUES(consent_given),
+                ON CONFLICT (submission_id, user_id) DO UPDATE SET
+                    consent_given = EXCLUDED.consent_given,
                     consent_timestamp = NOW(),
-                    metadata = VALUES(metadata)
+                    metadata = EXCLUDED.metadata
             `;
             
             await db.query(query, [
@@ -44,32 +49,25 @@ class ProctoringService {
     
     // CRITICAL FIX: GDPR/Privacy compliance - Ensure consent table exists
     async ensureConsentTableExists() {
-        try {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS proctoring_consents (
-                    id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-                    submission_id VARCHAR(36) NOT NULL,
-                    user_id VARCHAR(36) NOT NULL,
-                    consent_given BOOLEAN DEFAULT TRUE,
-                    consent_type VARCHAR(50) DEFAULT 'full_proctoring',
-                    consent_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    metadata JSON,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    UNIQUE KEY unique_submission_user (submission_id, user_id),
-                    FOREIGN KEY (submission_id) REFERENCES assessment_submissions(id) ON DELETE CASCADE,
-                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    INDEX idx_submission_id (submission_id),
-                    INDEX idx_user_id (user_id),
-                    INDEX idx_consent_timestamp (consent_timestamp)
-                )
-            `);
-        } catch (error) {
-            // Table might already exist, ignore error
-            if (!error.message.includes('already exists')) {
-                console.error('Error creating consent table:', error);
-            }
+        if (this.consentTableChecked) {
+            return this.consentTableAvailable;
         }
+
+        try {
+            await db.query('SELECT id FROM proctoring_consents LIMIT 1');
+            this.consentTableAvailable = true;
+        } catch (error) {
+            if (error.code === 'PGRST205' || error.message?.includes('does not exist')) {
+                console.warn('Proctoring consent table not found in Supabase. Please run the latest migrations.');
+            } else {
+                console.error('Error verifying consent table:', error);
+            }
+            this.consentTableAvailable = false;
+        } finally {
+            this.consentTableChecked = true;
+        }
+
+        return this.consentTableAvailable;
     }
     
     // CRITICAL FIX: GDPR/Privacy compliance - Auto-delete old proctoring data
@@ -77,6 +75,7 @@ class ProctoringService {
         try {
             const cutoffDate = new Date();
             cutoffDate.setDate(cutoffDate.getDate() - this.DATA_RETENTION_DAYS);
+            const cutoffIso = cutoffDate.toISOString();
             
             let deletedLogs = { affectedRows: 0 };
             let anonymizedConsents = 0;
@@ -85,11 +84,11 @@ class ProctoringService {
             try {
                 [deletedLogs] = await db.query(
                     'DELETE FROM proctoring_logs WHERE timestamp < ?',
-                    [cutoffDate]
+                    [cutoffIso]
                 );
             } catch (error) {
                 // Table doesn't exist yet, which is fine
-                if (error.code !== 'ER_NO_SUCH_TABLE') {
+                if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== '42P01' && error.code !== 'PGRST205' && !error.message?.includes('does not exist')) {
                     console.error('Error deleting old proctoring logs:', error);
                 }
             }
@@ -97,16 +96,17 @@ class ProctoringService {
             // Delete old consents (keep for audit but anonymize) - if table exists
             try {
                 // Ensure table exists first
-                await this.ensureConsentTableExists();
-                
-                const [result] = await db.query(
-                    'UPDATE proctoring_consents SET user_id = NULL, metadata = NULL WHERE consent_timestamp < ?',
-                    [cutoffDate]
-                );
-                anonymizedConsents = result.affectedRows || 0;
+                const consentTableReady = await this.ensureConsentTableExists();
+                if (consentTableReady) {
+                    const [result] = await db.query(
+                        'UPDATE proctoring_consents SET user_id = NULL, metadata = NULL WHERE consent_timestamp < ?',
+                        [cutoffIso]
+                    );
+                    anonymizedConsents = result.affectedRows || 0;
+                }
             } catch (error) {
                 // Table doesn't exist yet, which is fine - it will be created when needed
-                if (error.code !== 'ER_NO_SUCH_TABLE') {
+                if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== 'PGRST205') {
                     console.error('Error anonymizing old consents:', error);
                 }
             }
@@ -122,7 +122,7 @@ class ProctoringService {
         } catch (error) {
             // CRITICAL FIX: Don't throw errors for missing tables - they're optional
             // Only log unexpected errors
-            if (error.code !== 'ER_NO_SUCH_TABLE') {
+            if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== '42P01' && error.code !== 'PGRST205' && !error.message?.includes('does not exist')) {
                 console.error('Error cleaning up old proctoring data:', error);
             }
             return { deletedLogs: 0, anonymizedConsents: 0 };

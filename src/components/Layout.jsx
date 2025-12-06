@@ -2,10 +2,15 @@
 import React from 'react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
+import GeminiAssistant from '@/components/ai/GeminiAssistant';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLocation } from 'react-router-dom';
 
 const Layout = ({ children }) => {
   const { user } = useAuth();
+  const location = useLocation();
+  const footerlessRoutes = ['/login', '/signup'];
+  const shouldHideFooter = footerlessRoutes.includes(location.pathname);
 
   // If user is not logged in, show full-width layout without header
   if (!user) {
@@ -14,7 +19,7 @@ const Layout = ({ children }) => {
         <main className="flex-1">
           {children}
         </main>
-        <Footer />
+        {!shouldHideFooter && <Footer />}
       </div>
     );
   }
@@ -28,7 +33,8 @@ const Layout = ({ children }) => {
       <main className="flex-1 p-6 pt-8">
         {children}
       </main>
-      <Footer />
+      {!shouldHideFooter && <Footer />}
+      <GeminiAssistant />
     </div>
   );
 };
