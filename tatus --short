@@ -1,0 +1,27 @@
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/package.json b/package.json[m
+[1mindex d743c51..de6c6de 100644[m
+[1m--- a/package.json[m
+[1m+++ b/package.json[m
+[36m@@ -69,12 +69,19 @@[m
+     "@types/react-dom": "^18.2.7",[m
+     "@vitejs/plugin-react": "^4.0.3",[m
+     "autoprefixer": "^10.4.16",[m
+[31m-    "eslint": "^8.57.1",[m
+[31m-    "eslint-config-react-app": "^7.0.1",[m
+[32m+[m[32m    "eslint": "^9.0.0",[m
+     "eslint-plugin-react-refresh": "^0.4.24",[m
+     "postcss": "^8.4.31",[m
+     "tailwindcss": "^3.3.3",[m
+     "terser": "^5.39.0",[m
+     "vite": "^4.4.5"[m
+[32m+[m[32m  },[m
+[32m+[m[32m  "overrides": {[m
+[32m+[m[32m    "@babel/plugin-proposal-private-methods": "npm:@babel/plugin-transform-private-methods@^7.23.0",[m
+[32m+[m[32m    "@babel/plugin-proposal-optional-chaining": "npm:@babel/plugin-transform-optional-chaining@^7.23.0",[m
+[32m+[m[32m    "@babel/plugin-proposal-nullish-coalescing-operator": "npm:@babel/plugin-transform-nullish-coalescing-operator@^7.23.0",[m
+[32m+[m[32m    "@babel/plugin-proposal-class-properties": "npm:@babel/plugin-transform-class-properties@^7.23.0",[m
+[32m+[m[32m    "@babel/plugin-proposal-numeric-separator": "npm:@babel/plugin-transform-numeric-separator@^7.23.0",[m
+[32m+[m[32m    "rimraf": "^5.0.0"[m
+   }[m
+ }[m

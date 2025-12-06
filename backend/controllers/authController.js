@@ -381,12 +381,15 @@ export const login = async (req, res) => {
     // CRITICAL FIX: Set token in httpOnly cookie instead of returning in response body
     // This prevents XSS attacks from stealing tokens
     const isProduction = process.env.NODE_ENV === 'production';
+    // VERCEL FIX: Use 'lax' for sameSite to work with Vercel's routing
+    // Also ensure domain is not set (let browser handle it) for Vercel compatibility
     res.cookie('authToken', token, {
       httpOnly: true, // CRITICAL: Prevents JavaScript access (XSS protection)
       secure: isProduction, // Only send over HTTPS in production
-      sameSite: 'strict', // CSRF protection
+      sameSite: isProduction ? 'lax' : 'lax', // Use 'lax' for Vercel compatibility
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: '/'
+      path: '/',
+      // Don't set domain - let browser handle it for Vercel compatibility
     });
 
     res.json({
@@ -566,11 +569,12 @@ export const changePassword = async (req, res) => {
 
 // Logout (client-side token removal)
 export const logout = async (req, res) => {
-  // CRITICAL FIX: Clear httpOnly cookie on logout
+  // VERCEL FIX: Clear httpOnly cookie on logout with same settings as login
+  const isProduction = process.env.NODE_ENV === 'production';
   res.clearCookie('authToken', {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    secure: isProduction,
+    sameSite: 'lax', // VERCEL FIX: Use 'lax' for Vercel compatibility
     path: '/'
   });
 

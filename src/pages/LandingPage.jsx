@@ -68,11 +68,20 @@ const LandingPage = () => {
     const fetchStats = async () => {
       try {
         const baseUrl = getApiBaseUrl();
-        const response = await fetch(`${baseUrl}/analytics/public-stats`);
+        console.log('[LandingPage] Fetching stats from:', `${baseUrl}/analytics/public-stats`);
+        
+        const response = await fetch(`${baseUrl}/analytics/public-stats`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
         
         // Check if response is OK and is JSON
         if (!response.ok) {
-          console.warn('Stats endpoint returned non-OK status:', response.status);
+          console.warn('[LandingPage] Stats endpoint returned non-OK status:', response.status);
+          const errorText = await response.text().catch(() => 'Unable to read error');
+          console.warn('[LandingPage] Error response:', errorText);
           // Use default stats (already set to 0)
           return;
         }
@@ -80,17 +89,27 @@ const LandingPage = () => {
         // Check content-type before parsing
         const contentType = response.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-          console.warn('Stats endpoint returned non-JSON response:', contentType);
+          console.warn('[LandingPage] Stats endpoint returned non-JSON response:', contentType);
           // Use default stats (already set to 0)
           return;
         }
         
         const data = await response.json();
+        console.log('[LandingPage] Stats data received:', data);
+        
         if (data && data.success && data.data) {
+          console.log('[LandingPage] Setting stats:', data.data);
           setStats(data.data);
+        } else {
+          console.warn('[LandingPage] Invalid stats response format:', data);
         }
       } catch (error) {
-        console.error('Failed to fetch stats:', error);
+        console.error('[LandingPage] Failed to fetch stats:', error);
+        console.error('[LandingPage] Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack
+        });
         // Silently fail and use default stats (already set to 0)
       }
     };

@@ -3,8 +3,15 @@ import { pool } from '../config/database.js';
 
 export const authenticateToken = async (req, res, next) => {
   try {
+    // CRITICAL FIX: Support both Bearer token and cookie-based authentication
+    // This ensures compatibility with both old and new authentication methods
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    let token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    
+    // If no Bearer token, try to get from cookie (for Vercel/serverless compatibility)
+    if (!token && req.cookies && req.cookies.authToken) {
+      token = req.cookies.authToken;
+    }
 
     if (!token) {
       return res.status(401).json({ 

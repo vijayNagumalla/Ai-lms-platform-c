@@ -1698,17 +1698,20 @@ export const getPublicStats = async (req, res) => {
   try {
     console.log('[PublicStats] Handler started');
     
-    // Safely get stats with timeout protection
+    // VERCEL FIX: Safely get stats with shorter timeout for serverless functions
+    // Vercel serverless functions have a 10s timeout for free tier, so use 8s to be safe
     let stats;
     try {
+      const timeoutMs = process.env.NODE_ENV === 'production' ? 8000 : 10000;
       stats = await Promise.race([
         getPlatformStatsSnapshot(),
         new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Stats fetch timeout')), 10000)
+          setTimeout(() => reject(new Error('Stats fetch timeout')), timeoutMs)
         )
       ]);
     } catch (statsError) {
       console.error('[PublicStats] Error fetching stats:', statsError);
+      // Don't throw - return fallback instead
       stats = null;
     }
     

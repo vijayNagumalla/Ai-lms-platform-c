@@ -1,50 +1,42 @@
-import { pool } from '../config/database.js';
-
 /**
  * Fetches the key platform-wide stats that power the Super Admin dashboard
  * and the public landing page hero counters.
  * Uses direct Supabase queries for better reliability in production.
+ * Falls back to direct SQL queries if Supabase is unavailable.
  */
 export const getPlatformStatsSnapshot = async () => {
   try {
-    // Dynamically import supabase to ensure it's initialized
+    // Dynamically import supabase and pool to ensure they're initialized
     let supabase;
+    let pool;
     try {
       const dbModule = await import('../config/database.js');
       supabase = dbModule.supabase;
+      pool = dbModule.pool;
       
       if (!supabase) {
-        console.error('[PlatformStats] Supabase client not available');
-        return {
-          activeUsers: 0,
-          totalColleges: 0,
-          totalDepartments: 0,
-          totalAssessments: 0,
-          totalSubmissions: 0,
-        };
+        console.error('[PlatformStats] Supabase client not available, trying direct SQL fallback');
+        // Fall through to SQL fallback
       }
     } catch (importError) {
       console.error('[PlatformStats] Failed to import database module:', importError);
-      return {
-        activeUsers: 0,
-        totalColleges: 0,
-        totalDepartments: 0,
-        totalAssessments: 0,
-        totalSubmissions: 0,
-      };
+      // Fall through to SQL fallback
     }
 
-    console.log('[PlatformStats] Starting to fetch stats with Supabase...');
-    
-    // Use direct Supabase queries for better reliability
-    // This avoids SQL parsing issues with boolean values
-    const [
-      userResult,
-      collegeResult,
-      departmentResult,
-      assessmentResult,
-      submissionResult,
-    ] = await Promise.all([
+    // Try Supabase first if available
+    if (supabase) {
+      try {
+        console.log('[PlatformStats] Starting to fetch stats with Supabase...');
+      
+        // Use direct Supabase queries for better reliability
+        // This avoids SQL parsing issues with boolean values
+        const [
+          userResult,
+          collegeResult,
+          departmentResult,
+          assessmentResult,
+          submissionResult,
+        ] = await Promise.all([
       // Active users count
       supabase
         .from('users')
@@ -130,18 +122,93 @@ export const getPlatformStatsSnapshot = async () => {
         }),
     ]);
 
-    const stats = {
-      activeUsers: userResult?.count ?? 0,
-      totalColleges: collegeResult?.count ?? 0,
-      totalDepartments: departmentResult?.count ?? 0,
-      totalAssessments: assessmentResult?.count ?? 0,
-      totalSubmissions: submissionResult?.count ?? 0,
-    };
-    
-    console.log('[PlatformStats] Successfully fetched stats:', stats);
-    return stats;
+        const stats = {
+          activeUsers: userResult?.count ?? 0,
+          totalColleges: collegeResult?.count ?? 0,
+          totalDepartments: departmentResult?.count ?? 0,
+          totalAssessments: assessmentResult?.count ?? 0,
+          totalSubmissions: submissionResult?.count ?? 0,
+        };
+        
+        console.log('[PlatformStats] Successfully fetched stats via Supabase:', stats);
+        return stats;
+      } catch (supabaseError) {
+        console.error('[PlatformStats] Supabase query failed:', supabaseError);
+        console.error('[PlatformStats] Error details:', {
+          message: supabaseError?.message,
+          code: supabaseError?.code,
+          details: supabaseError?.details,
+          hint: supabaseError?.hint
+        });
+        // Fall through to SQL fallback
+      }
+    }
+
+    // FALLBACK: Use direct SQL queries if Supabase fails or is unavailable
+    console.log('[PlatformStats] Using SQL fallback for stats...');
+    if (!pool) {
+      console.error('[PlatformStats] Neither Supabase nor SQL pool available');
+      return {
+        activeUsers: 0,
+        totalColleges: 0,
+        totalDepartments: 0,
+        totalAssessments: 0,
+        totalSubmissions: 0,
+      };
+    }
+
+    try {
+      // Use direct SQL queries as fallback
+      // Handle both MySQL [rows, fields] and PostgreSQL [rows] formats
+      const userResult = await pool.execute(
+        'SELECT COUNT(*) as count FROM users WHERE is_active = true'
+      );
+      const collegeResult = await pool.execute(
+        'SELECT COUNT(*) as count FROM colleges WHERE is_active = true'
+      );
+      const assessmentResult = await pool.execute(
+        'SELECT COUNT(*) as count FROM assessments WHERE is_published = true'
+      );
+      const submissionResult = await pool.execute(
+        'SELECT COUNT(*) as count FROM assessment_submissions'
+      );
+
+      // Extract rows from result (handles both [rows, fields] and [rows] formats)
+      const getUserCount = (result) => {
+        const rows = Array.isArray(result) && result.length > 0 ? result[0] : result;
+        if (Array.isArray(rows) && rows.length > 0) {
+          const row = rows[0];
+          return Number(row?.count || row?.COUNT || Object.values(row || {})[0] || 0);
+        }
+        return 0;
+      };
+
+      const stats = {
+        activeUsers: getUserCount(userResult),
+        totalColleges: getUserCount(collegeResult),
+        totalDepartments: 0, // Not needed for public stats
+        totalAssessments: getUserCount(assessmentResult),
+        totalSubmissions: getUserCount(submissionResult),
+      };
+
+      console.log('[PlatformStats] Successfully fetched stats via SQL fallback:', stats);
+      return stats;
+    } catch (sqlError) {
+      console.error('[PlatformStats] SQL fallback also failed:', sqlError);
+      console.error('[PlatformStats] SQL error message:', sqlError?.message);
+      console.error('[PlatformStats] SQL error stack:', sqlError?.stack);
+      
+      // Return default values instead of throwing
+      return {
+        activeUsers: 0,
+        totalColleges: 0,
+        totalDepartments: 0,
+        totalAssessments: 0,
+        totalSubmissions: 0,
+      };
+    }
   } catch (error) {
-    console.error('[PlatformStats] Error in getPlatformStatsSnapshot:', error);
+    console.error('[PlatformStats] Critical error in getPlatformStatsSnapshot:', error);
     console.error('[PlatformStats] Error stack:', error.stack);
     console.error('[PlatformStats] Error message:', error.message);
     console.error('[PlatformStats] Error name:', error.name);

@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import cookieParser from 'cookie-parser';
 
 // Load environment variables
 dotenv.config();
@@ -41,13 +42,18 @@ const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
   : [];
 
+// VERCEL FIX: Improved CORS configuration for serverless functions
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
+    // Allow requests with no origin (mobile apps, curl, Postman, etc.)
     if (!origin) return callback(null, true);
     
-    // Allow same-origin requests (for Vercel deployments where frontend and API are on same domain)
-    if (origin.includes('vercel.app') || origin.includes('localhost')) {
+    // VERCEL FIX: Allow same-origin requests (for Vercel deployments where frontend and API are on same domain)
+    // This handles both vercel.app and vercel.com domains
+    if (origin.includes('vercel.app') || 
+        origin.includes('vercel.com') || 
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1')) {
       return callback(null, true);
     }
     
@@ -55,12 +61,15 @@ app.use(cors({
     if (allowedOrigins.length === 0 || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
+      // VERCEL FIX: Log the rejected origin for debugging
+      console.warn('[CORS] Rejected origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true,
+  credentials: true, // CRITICAL: Required for cookies to work
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token', 'X-XSRF-Token']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-CSRF-Token', 'X-XSRF-Token', 'Cookie'],
+  exposedHeaders: ['Set-Cookie'] // Allow client to see Set-Cookie header
 }));
 
 // Compression middleware
@@ -92,6 +101,9 @@ const limiter = rateLimit({
 });
 
 app.use(limiter);
+
+// Cookie parser middleware - CRITICAL for Vercel serverless functions
+app.use(cookieParser());
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
