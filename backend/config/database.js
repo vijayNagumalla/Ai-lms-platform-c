@@ -27,7 +27,11 @@ const supabaseDbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
 
 if (!supabaseUrl || !supabaseKey) {
   logger.error('Missing Supabase configuration. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env file');
-  if (process.env.NODE_ENV !== 'test') {
+  // VERCEL FIX: Don't exit process in serverless environment - let it fail gracefully
+  // process.exit(1) kills the serverless function and causes 500 errors
+  // Instead, we'll handle missing config in the query function
+  if (process.env.NODE_ENV === 'test') {
+    // Only exit in test environment
     process.exit(1);
   }
 }
@@ -847,6 +851,14 @@ class SQLParser {
 
 // Main query function
 export const query = async (sql, params = []) => {
+  // VERCEL FIX: Check for missing Supabase configuration and return helpful error
+  if (!supabaseUrl || !supabaseKey) {
+    const error = new Error('Database configuration error: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in environment variables');
+    error.code = 'MISSING_CONFIG';
+    error.isConfigError = true;
+    throw error;
+  }
+  
   try {
     const sqlUpper = sql.trim().toUpperCase();
     
@@ -2145,8 +2157,10 @@ export const pool = {
       const result = await query(sql, params);
       return result;
     } catch (error) {
+      // VERCEL FIX: Preserve error properties (isConfigError, code, etc.) for proper error handling
+      // Just re-throw the original error - it already has all properties
       logger.error('Pool execute error:', error);
-      throw error;
+      throw error; // Re-throw original error to preserve all properties
     }
   },
   

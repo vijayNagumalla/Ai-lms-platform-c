@@ -240,6 +240,16 @@ export const login = async (req, res) => {
       // Handle [rows, fields] format
       users = Array.isArray(result) && result.length > 0 ? result[0] : [];
     } catch (dbError) {
+      // VERCEL FIX: Handle missing configuration errors gracefully
+      if (dbError.isConfigError || dbError.code === 'MISSING_CONFIG') {
+        console.error('[Login] Database configuration error:', dbError.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Server configuration error',
+          error: 'Database configuration is missing. Please check environment variables.',
+          hint: 'Ensure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set in Vercel project settings'
+        });
+      }
       // Check if it's a network/DNS error (temporary connectivity issue)
       const isNetworkError = 
         dbError.message?.includes('ENOTFOUND') ||
