@@ -1,5 +1,6 @@
 import { pool } from '../config/database.js';
 import crypto from 'crypto';
+import cache from '../utils/cache.js';
 
 // Batch Management Functions
 export const createBatch = async (req, res) => {
@@ -171,9 +172,15 @@ export const deleteBatch = async (req, res) => {
 
 // Get all colleges with statistics
 export const getAllColleges = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search, city, state, country, is_active } = req.query;
+  // PERFORMANCE FIX: Cache colleges list based on query parameters
+  const { page = 1, limit = 10, search, city, state, country, is_active } = req.query;
+  const cacheKey = `colleges_list_${page}_${limit}_${search || 'none'}_${city || 'none'}_${state || 'none'}_${country || 'none'}_${is_active || 'none'}`;
+  const cached = cache.get(cacheKey);
+  if (cached !== null) {
+    return res.json(cached);
+  }
 
+  try {
     // Ensure proper type conversion and validation
     const pageNum = Math.max(1, parseInt(page) || 1);
     const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 10)); // Max 100 per page
@@ -243,7 +250,7 @@ export const getAllColleges = async (req, res) => {
     const total = countResult[0].total;
     const totalPages = Math.ceil(total / limitNum);
 
-    res.json({
+    const response = {
       success: true,
       data: {
         colleges,
@@ -254,7 +261,12 @@ export const getAllColleges = async (req, res) => {
           totalPages
         }
       }
-    });
+    };
+
+    // Cache for 1 minute (colleges list changes infrequently)
+    cache.set(cacheKey, response, 60 * 1000);
+
+    res.json(response);
 
   } catch (error) {
     // console.error('Error getting colleges:', error);
@@ -1103,10 +1115,11 @@ export const getCollegeStats = async (req, res) => {
 export const getCollegeLocations = async (req, res) => {
   try {
     // First check if the new columns exist
+    // Note: INFORMATION_SCHEMA queries automatically use direct PostgreSQL connection
     const [columns] = await pool.query(
       `SELECT COLUMN_NAME 
        FROM INFORMATION_SCHEMA.COLUMNS 
-       WHERE TABLE_SCHEMA = 'lms_platform' 
+       WHERE TABLE_SCHEMA = 'public' 
        AND TABLE_NAME = 'colleges' 
        AND COLUMN_NAME IN ('city', 'state', 'country')`
     );

@@ -2,76 +2,108 @@ import { pool } from '../config/database.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { getPlatformStatsSnapshot } from '../services/platformStatsService.js';
+import cache from '../utils/cache.js';
 
 // Get dashboard statistics
 export const getDashboardStats = async (req, res) => {
+  // PERFORMANCE FIX: Cache dashboard stats for 1 minute
+  const cacheKey = 'super_admin_dashboard_stats';
+  const cached = cache.get(cacheKey);
+  if (cached !== null) {
+    // Set cache headers for client-side caching
+    res.setHeader('Cache-Control', 'private, max-age=60'); // 1 minute
+    return res.json(cached);
+  }
+
   try {
+    // PERFORMANCE FIX: Parallelize all queries for maximum speed
+    const activitiesCacheKey = 'dashboard_recent_activities';
+    const userGrowthCacheKey = 'dashboard_user_growth';
+    const collegeGrowthCacheKey = 'dashboard_college_growth';
+    
+    // Check cache first
+    let recentActivities = cache.get(activitiesCacheKey);
+    let userGrowthResult = cache.get(userGrowthCacheKey);
+    let collegeGrowthResult = cache.get(collegeGrowthCacheKey);
+
+    // Prepare date strings once
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString();
+    
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+
+    // Run all queries in parallel (only if not cached)
+    const [platformStats, activitiesResult, userGrowthData, collegeGrowthData] = await Promise.all([
+      getPlatformStatsSnapshot(),
+      // Get recent activities (cache for 2 minutes)
+      recentActivities ? Promise.resolve(null) : pool.execute(`
+        SELECT 
+          'user' as type,
+          'New user registered' as description,
+          created_at
+         FROM users 
+         WHERE created_at >= ?
+         UNION ALL
+         SELECT 
+          'college' as type,
+          'New college created' as description,
+          created_at
+        FROM colleges
+         WHERE created_at >= ?
+        ORDER BY created_at DESC
+        LIMIT 10
+      `, [sevenDaysAgoStr, sevenDaysAgoStr]),
+      // Get user growth over time (cache for 5 minutes)
+      userGrowthResult ? Promise.resolve(null) : pool.execute(`
+        SELECT 
+          DATE(created_at)::text as date,
+          COUNT(*) as count
+        FROM users
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY DATE(created_at)
+      `, [thirtyDaysAgoStr]),
+      // Get college growth over time (cache for 5 minutes)
+      collegeGrowthResult ? Promise.resolve(null) : pool.execute(`
+        SELECT 
+          DATE(created_at)::text as date,
+          COUNT(*) as count
+        FROM colleges
+        WHERE created_at >= ?
+        GROUP BY DATE(created_at)
+        ORDER BY DATE(created_at)
+      `, [thirtyDaysAgoStr])
+    ]);
+
     const {
       activeUsers,
       totalColleges,
       totalDepartments,
       totalAssessments,
       totalSubmissions
-    } = await getPlatformStatsSnapshot();
+    } = platformStats;
     const totalUsers = activeUsers;
 
-    // Get recent activities
-    // Calculate date on application side - PostgreSQL compatible
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const sevenDaysAgoStr = sevenDaysAgo.toISOString();
-    
-    const [recentActivities] = await pool.execute(`
-      SELECT 
-        'user' as type,
-        'New user registered' as description,
-        created_at
-       FROM users 
-       WHERE created_at >= ?
-       UNION ALL
-       SELECT 
-        'college' as type,
-        'New college created' as description,
-        created_at
-      FROM colleges
-       WHERE created_at >= ?
-      ORDER BY created_at DESC
-      LIMIT 10
-    `, [sevenDaysAgoStr, sevenDaysAgoStr]);
+    // Process results and cache if needed
+    if (!recentActivities && activitiesResult) {
+      recentActivities = activitiesResult[0];
+      cache.set(activitiesCacheKey, recentActivities, 2 * 60 * 1000);
+    }
 
-    // Get user growth over time
-    // Calculate date on application side - PostgreSQL compatible
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
-    
-    const [userGrowthResult] = await pool.execute(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as count
-      FROM users
-      WHERE created_at >= ?
-      GROUP BY DATE(created_at)
-      ORDER BY date
-    `, [thirtyDaysAgoStr]);
+    if (!userGrowthResult && userGrowthData) {
+      userGrowthResult = userGrowthData[0];
+      cache.set(userGrowthCacheKey, userGrowthResult, 5 * 60 * 1000);
+    }
 
-    // Get college growth over time
-    // Calculate date on application side - PostgreSQL compatible
-    const thirtyDaysAgoColleges = new Date();
-    thirtyDaysAgoColleges.setDate(thirtyDaysAgoColleges.getDate() - 30);
-    const thirtyDaysAgoCollegesStr = thirtyDaysAgoColleges.toISOString();
-    
-    const [collegeGrowthResult] = await pool.execute(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as count
-      FROM colleges
-      WHERE created_at >= ?
-      GROUP BY DATE(created_at)
-      ORDER BY date
-    `, [thirtyDaysAgoCollegesStr]);
+    if (!collegeGrowthResult && collegeGrowthData) {
+      collegeGrowthResult = collegeGrowthData[0];
+      cache.set(collegeGrowthCacheKey, collegeGrowthResult, 5 * 60 * 1000);
+    }
 
-    res.json({
+    const response = {
       success: true,
       data: {
         totalUsers,
@@ -84,7 +116,14 @@ export const getDashboardStats = async (req, res) => {
         userGrowth: userGrowthResult,
         collegeGrowth: collegeGrowthResult,
       }
-    });
+    };
+
+    // Cache for 1 minute
+    // Set cache headers for client-side caching
+    res.setHeader('Cache-Control', 'private, max-age=60'); // 1 minute
+    cache.set(cacheKey, response, 60 * 1000);
+
+    res.json(response);
 
   } catch (error) {
     console.error('Error getting dashboard stats:', error);

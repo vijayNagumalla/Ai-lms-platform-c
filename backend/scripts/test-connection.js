@@ -5,26 +5,45 @@
 import pg from 'pg';
 const { Pool } = pg;
 
-const projectRef = 'zhacsxhsjgfnniefmadh';
-const password = 'Vijay%402607%40';
-const region = 'ap-south-1';
+// SECURITY FIX: Read from environment variables
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load environment variables
+dotenv.config({ path: join(__dirname, '..', '.env') });
+
+const projectRef = process.env.SUPABASE_PROJECT_REF || 'zhacsxhsjgfnniefmadh';
+const password = process.env.SUPABASE_DB_PASSWORD;
+const region = process.env.SUPABASE_REGION || 'ap-south-1';
+
+if (!password) {
+  console.error('❌ ERROR: SUPABASE_DB_PASSWORD environment variable is required');
+  console.error('   Set it in your backend/.env file');
+  process.exit(1);
+}
+
+const encodedPassword = encodeURIComponent(password);
 
 const connectionStrings = [
   {
     name: 'Connection Pooling (postgres.[project-ref])',
-    url: `postgresql://postgres.${projectRef}:${password}@aws-0-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres.${projectRef}:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Connection Pooling (aws-1 instead of aws-0)',
-    url: `postgresql://postgres.${projectRef}:${password}@aws-1-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres.${projectRef}:${encodedPassword}@aws-1-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Direct Connection (port 5432)',
-    url: `postgresql://postgres:${password}@db.${projectRef}.supabase.co:5432/postgres`
+    url: `postgresql://postgres:${encodedPassword}@db.${projectRef}.supabase.co:5432/postgres`
   },
   {
     name: 'Connection Pooling (just postgres username)',
-    url: `postgresql://postgres:${password}@aws-0-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres`
   }
 ];
 
@@ -65,14 +84,7 @@ async function main() {
   console.log('\n🔍 Testing Supabase Connection Strings\n');
   console.log('='.repeat(70));
   
-  // First, try to read from .env if available
-  const dotenv = await import('dotenv');
-  const { fileURLToPath } = await import('url');
-  const { dirname, join } = await import('path');
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  
-  dotenv.config({ path: join(__dirname, '..', '.env') });
+  // Connection string from .env file
   const envConnectionString = process.env.SUPABASE_DB_URL;
   
   if (envConnectionString) {

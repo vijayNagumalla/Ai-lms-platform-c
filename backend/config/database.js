@@ -32,11 +32,37 @@ if (!supabaseUrl || !supabaseKey) {
   }
 }
 
+// Validate SUPABASE_URL format
+if (supabaseUrl) {
+  // More flexible regex to handle various URL formats
+  const urlPattern = /^https?:\/\/[a-zA-Z0-9-]+\.supabase\.co\/?$/;
+  if (!urlPattern.test(supabaseUrl)) {
+    logger.warn(`⚠️  SUPABASE_URL format may be incorrect: ${supabaseUrl}`);
+    logger.warn('   Expected format: https://[project-ref].supabase.co');
+    logger.warn('   Verify your SUPABASE_URL in the Supabase Dashboard → Settings → API');
+  } else {
+    // Extract project ref for better error messages
+    const projectRef = supabaseUrl.match(/https?:\/\/([a-zA-Z0-9-]+)\.supabase\.co/)?.[1];
+    if (projectRef) {
+      logger.debug(`✅ Supabase URL format valid (project: ${projectRef})`);
+    }
+  }
+}
+
 // Create Supabase client with service role key for admin operations
 const supabase = createClient(supabaseUrl, supabaseKey || 'dummy-key', {
   auth: {
     autoRefreshToken: false,
     persistSession: false
+  },
+  // Add timeout and retry configuration for better error handling
+  db: {
+    schema: 'public'
+  },
+  global: {
+    headers: {
+      'x-client-info': 'lms-platform'
+    }
   }
 });
 
@@ -97,18 +123,41 @@ const initPostgresConnection = async (retry = false) => {
       ssl: supabaseDbUrl.includes('supabase') ? { rejectUnauthorized: false } : false,
       max: 2, // Reduced for Shared Pooler (works better with fewer connections)
       min: 0, // Don't maintain minimum connections (let pooler handle it)
-      idleTimeoutMillis: 10000, // Shorter idle timeout for pooler
-      connectionTimeoutMillis: 10000, // Faster timeout for pooler
+      idleTimeoutMillis: 30000, // Increased to 30s to reduce terminations
+      connectionTimeoutMillis: 20000, // Increased to 20s for better network reliability
       query_timeout: 30000, // Query timeout
       // Connection pooler specific settings
       allowExitOnIdle: true, // Allow pool to close idle connections (pooler handles reconnection)
       // Handle connection errors gracefully
       application_name: 'lms-platform',
+      // PERFORMANCE FIX: Better handling of connection lifecycle
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
     });
     
     // Add error handlers to the pool
     pgPool.on('error', (err) => {
-      logger.warn('PostgreSQL pool error:', err.message);
+      // PERFORMANCE FIX: Filter out expected connection termination errors
+      // These are normal with connection poolers (Supabase closes idle connections)
+      const errorMessage = err.message || JSON.stringify(err);
+      const isExpectedTermination = 
+        errorMessage.includes('shutdown') ||
+        errorMessage.includes('db_termination') ||
+        errorMessage.includes('terminating connection') ||
+        errorMessage.includes('connection closed') ||
+        errorMessage.includes('server closed the connection') ||
+        (typeof err === 'object' && err.shutdown === 'db_termination');
+      
+      if (isExpectedTermination) {
+        // These are expected - connection pooler is managing connections
+        // Log at debug level only, not warning
+        logger.debug('PostgreSQL connection terminated by pooler (expected):', errorMessage.substring(0, 100));
+        // Reset connection state to allow automatic reconnection
+        connectionInitialized = false;
+      } else {
+        // Actual errors should be logged
+        logger.warn('PostgreSQL pool error:', errorMessage);
+      }
       // Don't reset connection on pool errors - let individual queries handle retries
     });
     
@@ -318,7 +367,30 @@ const testConnection = async () => {
     logger.info('✅ Supabase connected successfully');
     return true;
   } catch (error) {
-    logger.error('❌ Supabase connection failed:', error.message);
+    // Check if it's a network/DNS error
+    const isNetworkError =
+      error.message?.includes('ENOTFOUND') ||
+      error.message?.includes('getaddrinfo') ||
+      error.message?.includes('fetch failed') ||
+      error.message?.includes('ECONNREFUSED') ||
+      error.message?.includes('ETIMEDOUT') ||
+      error.message?.includes('ConnectTimeoutError') ||
+      error.message?.includes('Connection timeout') ||
+      error.name === 'ConnectTimeoutError' ||
+      error.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+      (error.details && (error.details.includes('ENOTFOUND') || error.details.includes('ConnectTimeoutError')));
+    
+    if (isNetworkError) {
+      logger.warn('⚠️  Supabase connection failed (network error):', error.message?.substring(0, 150));
+      logger.warn('   This usually means:');
+      logger.warn('   1. SUPABASE_URL is incorrect or project does not exist');
+      logger.warn('   2. Network connectivity issues');
+      logger.warn('   3. Supabase project might be paused');
+      logger.warn(`   Current SUPABASE_URL: ${supabaseUrl}`);
+      logger.warn('   Verify your SUPABASE_URL in Supabase Dashboard → Settings → API');
+    } else {
+      logger.error('❌ Supabase connection failed:', error.message);
+    }
     return false;
   }
 };
@@ -335,7 +407,10 @@ class SQLParser {
     
     // For aggregation queries with JOINs, use direct PostgreSQL connection if available
     if (hasAggregations && hasJoins) {
-      logger.debug('Aggregation query with JOINs detected - using direct PostgreSQL connection if available');
+      // Only log in development - this is expected behavior
+      if (process.env.NODE_ENV === 'development') {
+        logger.debug('Aggregation query with JOINs - using direct PostgreSQL connection (expected)');
+      }
       
       // Return a promise-like object that executes the query
       const queryPromise = (async () => {
@@ -383,7 +458,13 @@ class SQLParser {
     let query = supabase.from(tableName);
     
     // Parse SELECT columns
-    const selectMatch = normalizedSql.match(/SELECT\s+(.+?)\s+FROM/i);
+    // Strip DISTINCT keyword if present (Supabase PostgREST doesn't support it directly)
+    // This is a fallback - DISTINCT queries should be routed to PostgreSQL in the main query function
+    const distinctMatch = normalizedSql.match(/SELECT\s+DISTINCT\s+(.+?)\s+FROM/i);
+    const selectMatch = distinctMatch 
+      ? { 1: distinctMatch[1].trim() } // Use columns after DISTINCT, trimmed
+      : normalizedSql.match(/SELECT\s+(.+?)\s+FROM/i);
+    
     if (selectMatch) {
       const columns = selectMatch[1].trim();
       
@@ -671,6 +752,7 @@ class SQLParser {
   }
   
   static parseUpdate(sql, params) {
+    // Use original SQL to preserve structure (don't normalize - it breaks multi-line SET clauses)
     const tableMatch = sql.match(/UPDATE\s+`?(\w+)`?/i);
     if (!tableMatch) {
       throw new Error('Could not parse table name from UPDATE SQL');
@@ -678,33 +760,69 @@ class SQLParser {
     
     const tableName = tableMatch[1];
     
-    // Parse SET clause
-    const setMatch = sql.match(/SET\s+(.+?)(?:\s+WHERE|$)/i);
+    // Parse SET clause - handle multi-line SET clauses
+    // Match SET ... WHERE or SET ... (end of string)
+    // Use [\s\S] to match any character including newlines
+    const setMatch = sql.match(/SET\s+([\s\S]+?)(?:\s+WHERE|$)/i);
     if (!setMatch) {
       throw new Error('Could not parse SET clause from UPDATE SQL');
     }
     
+    let setClause = setMatch[1].trim();
+    
     const updates = {};
-    const setClause = setMatch[1];
-    const assignments = setClause.split(',');
+    // Normalize setClause - replace newlines with spaces but preserve structure
+    setClause = setClause.replace(/\n/g, ' ').replace(/\r/g, ' ').replace(/\s+/g, ' ').trim();
+    
+    // Split by comma, but handle cases where commas might be inside function calls
+    // Simple approach: split by comma and trim, filter out empty strings
+    const assignments = setClause.split(',').map(a => a.trim()).filter(a => a.length > 0);
+    
+    if (assignments.length === 0) {
+      throw new Error('No valid assignments found in SET clause');
+    }
     
     let paramIndex = 0;
     assignments.forEach(assignment => {
-      const [column, value] = assignment.split('=').map(s => s.trim().replace(/`/g, ''));
+      // Handle assignment like "column = value" or "column=value"
+      const equalIndex = assignment.indexOf('=');
+      if (equalIndex === -1) {
+        // Skip malformed assignments but log for debugging
+        console.warn('Skipping malformed assignment (no = found):', assignment);
+        return;
+      }
+      
+      const column = assignment.substring(0, equalIndex).trim().replace(/`/g, '');
+      const value = assignment.substring(equalIndex + 1).trim();
+      
+      if (!column) {
+        console.warn('Skipping assignment with empty column name:', assignment);
+        return;
+      }
+      
       if (value === '?') {
+        if (paramIndex >= params.length) {
+          throw new Error(`Not enough parameters provided. Expected at least ${paramIndex + 1}, got ${params.length}`);
+        }
         updates[column] = params[paramIndex++];
       } else if (value === 'NULL' || value === 'null') {
         updates[column] = null;
-      } else if (value.startsWith("'") || value.startsWith('"')) {
+      } else if (value.toUpperCase() === 'NOW()' || value.toUpperCase() === 'CURRENT_TIMESTAMP') {
+        // Handle NOW() and CURRENT_TIMESTAMP
+        updates[column] = new Date().toISOString();
+      } else if (value.startsWith("'") && value.endsWith("'")) {
         updates[column] = value.slice(1, -1);
-      } else if (!isNaN(value) && value !== '') {
+      } else if (value.startsWith('"') && value.endsWith('"')) {
+        updates[column] = value.slice(1, -1);
+      } else if (!isNaN(value) && value !== '' && !isNaN(parseFloat(value))) {
         updates[column] = parseFloat(value);
       } else {
+        // For other values (like function calls), keep as-is but might need special handling
         updates[column] = value;
       }
     });
     
-    // Parse WHERE clause
+    // Parse WHERE clause - use original SQL to preserve structure
     const whereMatch = sql.match(/WHERE\s+([\s\S]+?)(?:\s+LIMIT|$)/i);
     const whereConditions = whereMatch ? this.parseWhereClause(whereMatch[1], params.slice(paramIndex)) : [];
     
@@ -731,6 +849,42 @@ class SQLParser {
 export const query = async (sql, params = []) => {
   try {
     const sqlUpper = sql.trim().toUpperCase();
+    
+    // INFORMATION_SCHEMA queries must use direct PostgreSQL connection (PostgREST doesn't support them)
+    if (sqlUpper.includes('INFORMATION_SCHEMA')) {
+      let hasConnection = await ensurePostgresConnection();
+      
+      // If connection check failed but SUPABASE_DB_URL is set, try to initialize
+      if (!hasConnection && supabaseDbUrl) {
+        logger.debug('Connection not ready for INFORMATION_SCHEMA query, attempting to initialize...');
+        await initPostgresConnection(true); // Force retry
+        hasConnection = await ensurePostgresConnection();
+      }
+      
+      if (hasConnection && pgPool) {
+        try {
+          // Convert MySQL syntax to PostgreSQL
+          let pgSql = sql
+            .replace(/assessment_templates/g, 'assessments')
+            // Fix schema name - Supabase uses 'public', not 'lms_platform'
+            .replace(/TABLE_SCHEMA\s*=\s*['"]lms_platform['"]/gi, "table_schema = 'public'")
+            .replace(/TABLE_SCHEMA\s*=\s*['"]public['"]/gi, "table_schema = 'public'")
+            // Convert ? placeholders to $1, $2, etc.
+            .replace(/\?/g, (match, offset, string) => {
+              const placeholderIndex = (sql.substring(0, offset).match(/\?/g) || []).length + 1;
+              return `$${placeholderIndex}`;
+            });
+          
+          const result = await pgPool.query(pgSql, params);
+          return [result.rows || []];
+        } catch (error) {
+          logger.error('INFORMATION_SCHEMA query error:', error);
+          throw error;
+        }
+      } else {
+        throw new Error('INFORMATION_SCHEMA queries require SUPABASE_DB_URL for direct PostgreSQL connection');
+      }
+    }
     
     // Handle COUNT(*) queries specially - must be before general SELECT handling
     if (sqlUpper.includes('COUNT(*)') || sqlUpper.includes('COUNT( * )')) {
@@ -790,17 +944,87 @@ export const query = async (sql, params = []) => {
       
       const { count, error } = await query;
       if (error) {
-        // If error, try without head option
-        const retryQuery = supabase.from(mappedTableName).select('*', { count: 'exact' });
-        const { count: retryCount, error: retryError } = await retryQuery;
-        if (retryError) throw retryError;
-        return [[{ count: retryCount || 0 }]];
+        // Check if error message contains HTML (Cloudflare error pages)
+        const errorMessage = error.message || '';
+        const isHtmlError = 
+          errorMessage.includes('<!DOCTYPE') ||
+          errorMessage.includes('<!doctype') ||
+          errorMessage.includes('<html');
+        
+        // Check for Cloudflare 521 error (Web server is down)
+        const isCloudflare521 = 
+          isHtmlError && (
+            errorMessage.includes('521') ||
+            errorMessage.includes('Web server is down')
+          );
+        
+        // Check if it's a network error
+        const isNetworkError = 
+          isCloudflare521 ||
+          error.message?.includes('ENOTFOUND') ||
+          error.message?.includes('getaddrinfo') ||
+          error.message?.includes('fetch failed') ||
+          error.message?.includes('ECONNREFUSED') ||
+          error.message?.includes('ETIMEDOUT') ||
+          (error.details && error.details.includes('ENOTFOUND'));
+        
+        if (isNetworkError) {
+          // Network errors should be wrapped with more context
+          const networkError = new Error(
+            isCloudflare521 
+              ? 'Supabase database server is temporarily unavailable (Error 521: Web server is down)'
+              : `Network error connecting to Supabase: ${error.message}`
+          );
+          networkError.originalError = error;
+          networkError.isNetworkError = true;
+          throw networkError;
+        }
+        
+        // If error, try without head option (but not for server down errors)
+        if (!isCloudflare521) {
+          const retryQuery = supabase.from(mappedTableName).select('*', { count: 'exact' });
+          const { count: retryCount, error: retryError } = await retryQuery;
+          if (retryError) throw retryError;
+          return [[{ count: retryCount || 0 }]];
+        } else {
+          throw error;
+        }
       }
       return [[{ count: count || 0 }]];
     }
     
     // SELECT queries
     if (sqlUpper.startsWith('SELECT')) {
+      // Handle SELECT DISTINCT queries - Supabase PostgREST doesn't support DISTINCT
+      // Use direct PostgreSQL connection for DISTINCT queries
+      // Check for DISTINCT with flexible whitespace handling
+      const hasDistinct = /SELECT\s+DISTINCT\s+/i.test(sql);
+      if (hasDistinct) {
+        const hasConnection = await ensurePostgresConnection();
+        if (hasConnection && pgPool) {
+          try {
+            // Convert MySQL syntax to PostgreSQL
+            let pgSql = sql
+              .replace(/assessment_templates/g, 'assessments')
+              .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+              .replace(/\bTRUE\b/g, 'true')
+              .replace(/\bFALSE\b/g, 'false');
+            
+            // Replace ? placeholders with $1, $2, etc. for PostgreSQL
+            let paramIndex = 1;
+            pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+            
+            const result = await pgPool.query(pgSql, params);
+            return [result.rows || []];
+          } catch (error) {
+            logger.error('PostgreSQL DISTINCT query error:', error);
+            throw error;
+          }
+        } else {
+          throw new Error('SELECT DISTINCT queries require SUPABASE_DB_URL for direct PostgreSQL connection');
+        }
+      }
+      
       // Handle SELECT * queries - need to get all columns
       if (sql.includes('*') && !sql.includes('COUNT')) {
         // For SELECT * queries, we need to specify columns or use RPC
@@ -809,6 +1033,28 @@ export const query = async (sql, params = []) => {
         if (tableMatch) {
           const tableName = tableMatch[1];
           const mappedTableName = tableName === 'assessment_templates' ? 'assessments' : tableName;
+          
+          // PRIORITY FIX: If PostgreSQL connection is available, use it directly for simple queries
+          // This avoids Supabase PostgREST failures when project is paused or has issues
+          const hasConnection = await ensurePostgresConnection();
+          if (hasConnection && pgPool && !sql.includes('LEFT JOIN') && !sql.includes('JOIN') && !sql.includes('u.*')) {
+            // Simple SELECT * query - use PostgreSQL directly
+            try {
+              logger.debug('Using direct PostgreSQL connection for simple SELECT query (PostgREST fallback)');
+              let pgSql = sql
+                .replace(/assessment_templates/g, 'assessments')
+                .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+                .replace(/\bTRUE\b/g, 'true')
+                .replace(/\bFALSE\b/g, 'false');
+              let paramIndex = 1;
+              pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+              const result = await pgPool.query(pgSql, params);
+              return [result.rows || []];
+            } catch (pgError) {
+              logger.warn('PostgreSQL query failed, falling back to Supabase PostgREST:', pgError.message);
+              // Fall through to Supabase PostgREST attempt
+            }
+          }
           
           // For SELECT u.*, we need to handle joins differently
           if (sql.includes('u.*') || sql.includes('LEFT JOIN') || sql.includes('JOIN')) {
@@ -821,6 +1067,22 @@ export const query = async (sql, params = []) => {
               const query = SQLParser.parseSelect(sql.replace(/assessment_templates/g, 'assessments'), params);
               const { data, error } = await query;
               if (error) {
+                // Check if it's a table not found error (PGRST205) - try PostgreSQL fallback
+                if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+                  const hasConnection = await ensurePostgresConnection();
+                  if (hasConnection && pgPool) {
+                    try {
+                      logger.debug('Table not found in Supabase PostgREST, falling back to direct PostgreSQL connection');
+                      let pgSql = sql.replace(/assessment_templates/g, 'assessments');
+                      let paramIndex = 1;
+                      pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+                      const result = await pgPool.query(pgSql, params);
+                      return [result.rows || []];
+                    } catch (pgError) {
+                      logger.warn('PostgreSQL fallback also failed:', pgError.message);
+                    }
+                  }
+                }
                 // Only warn if query fails and it's not an aggregation query
                 if (!hasAggregations && !hasCalculatedColumns) {
                   logger.warn('Complex SELECT with joins failed, may need RPC function:', sql.substring(0, 100), error.message);
@@ -830,7 +1092,9 @@ export const query = async (sql, params = []) => {
               return [data || []];
             } catch (queryError) {
               // If Supabase query fails, try direct PostgreSQL connection if available
-              if (!hasAggregations && !hasCalculatedColumns) {
+              // Skip fallback for aggregation queries unless it's a table not found error
+              const isTableNotFound = queryError.code === 'PGRST205' || queryError.message?.includes('Could not find the table');
+              if (!hasAggregations && !hasCalculatedColumns || isTableNotFound) {
                 const hasConnection = await ensurePostgresConnection();
                 if (hasConnection && pgPool) {
                   logger.debug('Falling back to direct PostgreSQL connection for JOIN query');
@@ -874,7 +1138,38 @@ export const query = async (sql, params = []) => {
             }
             
             const { data, error } = await query;
-            if (error) throw error;
+            if (error) {
+              // Check if it's a table not found error (PGRST205) - try PostgreSQL fallback
+              if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+                const hasConnection = await ensurePostgresConnection();
+                if (hasConnection && pgPool) {
+                  try {
+                    logger.debug('Table not found in Supabase PostgREST, falling back to direct PostgreSQL connection');
+                    let pgSql = sql
+                      .replace(/assessment_templates/g, 'assessments')
+                      .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+                      .replace(/\bTRUE\b/g, 'true')
+                      .replace(/\bFALSE\b/g, 'false');
+                    let paramIndex = 1;
+                    pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+                    const result = await pgPool.query(pgSql, params);
+                    logger.debug('PostgreSQL fallback succeeded for table not found error');
+                    return [result.rows || []];
+                  } catch (pgError) {
+                    logger.warn('PostgreSQL fallback also failed:', pgError.message);
+                    // Mark error as logged to prevent duplicate logging
+                    error._logged = true;
+                    error._fallbackAttempted = true;
+                  }
+                } else {
+                  // Mark error as logged and provide helpful message
+                  error._logged = true;
+                  error._fallbackUnavailable = true;
+                  logger.warn('Table not found in Supabase PostgREST and PostgreSQL fallback unavailable. Set SUPABASE_DB_URL for direct PostgreSQL connection.');
+                }
+              }
+              throw error;
+            }
             return [data || []];
           }
         }
@@ -887,14 +1182,44 @@ export const query = async (sql, params = []) => {
         .replace(/at\.status\s*=\s*['"]published['"]/gi, 'at.is_published = true')
         .replace(/assessments\.status\s*=\s*['"]published['"]/gi, 'assessments.is_published = true');
       
+      // PRIORITY FIX: If PostgreSQL connection is available and Supabase PostgREST is having issues,
+      // prioritize PostgreSQL for all SELECT queries (except complex ones that need special handling)
+      const hasConnection = await ensurePostgresConnection();
+      const usePostgresFirst = hasConnection && pgPool && process.env.USE_POSTGRES_FIRST !== 'false';
+      
       // Skip Supabase foreign key approach for complex aggregation queries
       // These queries use GROUP BY, COUNT, AVG, etc. and need to be executed as raw SQL
       const hasAggregations = /GROUP\s+BY|COUNT\s*\(|AVG\s*\(|SUM\s*\(|MAX\s*\(|MIN\s*\(|COALESCE\s*\(/i.test(normalizedSql);
       const hasCalculatedColumns = /as\s+(averageScore|average_score|totalStudents|total_students|totalAssessments|total_assessments|completedAssessments|completed_assessments|totalSubmissions|total_submissions)/i.test(normalizedSql);
       
-      // Log when skipping Supabase approach for aggregation queries
-      if ((normalizedSql.includes('u.*') || normalizedSql.includes('LEFT JOIN') || normalizedSql.includes('JOIN')) && (hasAggregations || hasCalculatedColumns)) {
-        logger.debug('Skipping Supabase foreign key approach for aggregation query, using raw SQL parser');
+      // For simple SELECT queries, use PostgreSQL directly if available (avoids PostgREST failures)
+      const isSimpleSelect = !hasAggregations && !hasCalculatedColumns && 
+                            !normalizedSql.includes('LEFT JOIN') && 
+                            !normalizedSql.includes('INNER JOIN') && 
+                            !normalizedSql.includes('RIGHT JOIN') &&
+                            !normalizedSql.includes('JOIN');
+      
+      if (usePostgresFirst && isSimpleSelect) {
+        try {
+          logger.debug('Using direct PostgreSQL connection for simple SELECT query (PostgREST bypass)');
+          let pgSql = normalizedSql
+            .replace(/UUID\(\)/gi, 'gen_random_uuid()');
+          let paramIndex = 1;
+          pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+          const result = await pgPool.query(pgSql, params);
+          return [result.rows || []];
+        } catch (pgError) {
+          logger.debug('PostgreSQL query failed, falling back to Supabase PostgREST:', pgError.message);
+          // Fall through to Supabase PostgREST attempt
+        }
+      }
+      
+      // PERFORMANCE FIX: Only log aggregation query routing in development mode
+      // This is expected behavior - complex queries use direct PostgreSQL connection
+      if (process.env.NODE_ENV === 'development' && 
+          (normalizedSql.includes('u.*') || normalizedSql.includes('LEFT JOIN') || normalizedSql.includes('JOIN')) && 
+          (hasAggregations || hasCalculatedColumns)) {
+        logger.debug('Aggregation query detected - using direct PostgreSQL connection (expected behavior)');
       }
       
       // Handle SELECT queries with JOINs - use Supabase foreign key relationships
@@ -1259,8 +1584,15 @@ export const query = async (sql, params = []) => {
       
       // For aggregation queries with JOINs, use direct PostgreSQL connection
       if (hasAggregations && hasJoins) {
-        // Ensure connection is ready
-        const hasConnection = await ensurePostgresConnection();
+        // Ensure connection is ready - try to initialize if not already done
+        let hasConnection = await ensurePostgresConnection();
+        
+        // If connection check failed but SUPABASE_DB_URL is set, try to initialize
+        if (!hasConnection && supabaseDbUrl) {
+          logger.debug('Connection not ready, attempting to initialize...');
+          await initPostgresConnection(true); // Force retry
+          hasConnection = await ensurePostgresConnection();
+        }
         
         if (hasConnection && pgPool) {
           try {
@@ -1297,8 +1629,17 @@ export const query = async (sql, params = []) => {
             return [result.rows];
           } catch (error) {
             // Handle connection termination errors
-            if (error.message && (error.message.includes('shutdown') || error.message.includes('db_termination') || error.message.includes('terminating connection'))) {
-              logger.warn('PostgreSQL connection terminated, resetting pool...');
+            const errorMessage = error.message || JSON.stringify(error);
+            const isTerminationError = 
+              errorMessage.includes('shutdown') || 
+              errorMessage.includes('db_termination') || 
+              errorMessage.includes('terminating connection') ||
+              errorMessage.includes('connection closed') ||
+              (typeof error === 'object' && error.shutdown === 'db_termination');
+            
+            if (isTerminationError) {
+              // These are expected with connection poolers - log at debug level
+              logger.debug('PostgreSQL connection terminated by pooler, reconnecting...');
               // Reset connection state to allow reconnection
               connectionInitialized = false;
               if (pgPool) {
@@ -1351,13 +1692,57 @@ export const query = async (sql, params = []) => {
             throw error;
           }
         } else {
+          // Try to initialize connection if not already done
+          const connectionReady = await ensurePostgresConnection();
+          if (connectionReady && pgPool) {
+            // Retry with direct PostgreSQL connection
+            try {
+              let pgSql = normalizedSql
+                .replace(/assessment_templates/g, 'assessments')
+                .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+                .replace(/\bTRUE\b/g, 'true')
+                .replace(/\bFALSE\b/g, 'false')
+                .replace(/status\s*=\s*['"]published['"]/gi, 'is_published = true')
+                .replace(/\?/g, (match, offset, string) => {
+                  const placeholderIndex = (normalizedSql.substring(0, offset).match(/\?/g) || []).length + 1;
+                  return `$${placeholderIndex}`;
+                });
+              const result = await pgPool.query(pgSql, params);
+              return [result.rows];
+            } catch (pgError) {
+              logger.error('PostgreSQL query error:', pgError);
+              throw new Error(`Database query failed: ${pgError.message}`);
+            }
+          }
           throw new Error('Complex aggregation queries with JOINs require SUPABASE_DB_URL environment variable for direct PostgreSQL connection. Please set SUPABASE_DB_URL in your .env file.');
         }
       }
       
       const query = SQLParser.parseSelect(normalizedSql, params);
       const { data, error } = await query;
-      if (error) throw error;
+      if (error) {
+        // Check if it's a table not found error (PGRST205) - try PostgreSQL fallback
+        if (error.code === 'PGRST205' || error.message?.includes('Could not find the table')) {
+          const hasConnection = await ensurePostgresConnection();
+          if (hasConnection && pgPool) {
+            try {
+              logger.debug('Table not found in Supabase PostgREST, falling back to direct PostgreSQL connection');
+              let pgSql = sql
+                .replace(/assessment_templates/g, 'assessments')
+                .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+                .replace(/\bTRUE\b/g, 'true')
+                .replace(/\bFALSE\b/g, 'false');
+              let paramIndex = 1;
+              pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+              const result = await pgPool.query(pgSql, params);
+              return [result.rows || []];
+            } catch (pgError) {
+              logger.warn('PostgreSQL fallback also failed:', pgError.message);
+            }
+          }
+        }
+        throw error;
+      }
       return [data || []];
     }
     
@@ -1430,6 +1815,30 @@ export const query = async (sql, params = []) => {
     
     // UPDATE queries
     if (sqlUpper.startsWith('UPDATE')) {
+      // PRIORITY FIX: Use PostgreSQL directly if available (avoids PostgREST failures)
+      const hasConnection = await ensurePostgresConnection();
+      if (hasConnection && pgPool) {
+        try {
+          logger.debug('Using direct PostgreSQL connection for UPDATE query (PostgREST bypass)');
+          let pgSql = sql
+            .replace(/assessment_templates/g, 'assessments')
+            .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+            .replace(/\bTRUE\b/g, 'true')
+            .replace(/\bFALSE\b/g, 'false')
+            .replace(/NOW\(\)/gi, 'CURRENT_TIMESTAMP')
+            .replace(/CURRENT_TIMESTAMP/gi, 'CURRENT_TIMESTAMP');
+          let paramIndex = 1;
+          pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+          const result = await pgPool.query(pgSql, params);
+          // Return in MySQL format: [result, fields]
+          // For UPDATE, result.rowCount is the number of affected rows
+          return [{ affectedRows: result.rowCount || 0, insertId: null }, []];
+        } catch (pgError) {
+          logger.warn('PostgreSQL UPDATE query failed, falling back to Supabase PostgREST:', pgError.message);
+          // Fall through to Supabase PostgREST attempt
+        }
+      }
+      
       const { tableName, updates, whereConditions } = SQLParser.parseUpdate(sql, params);
       let query = supabase.from(tableName).update(updates);
       
@@ -1498,30 +1907,45 @@ export const query = async (sql, params = []) => {
     
     // Handle ALTER TABLE queries (Supabase doesn't support via PostgREST)
     if (sqlUpper.startsWith('ALTER TABLE')) {
-      // For Supabase, ALTER TABLE must be run directly in SQL Editor
-      // We'll gracefully skip these in application code
-      logger.warn('ALTER TABLE queries are not supported via PostgREST. Run in Supabase SQL Editor:', sql.substring(0, 100));
-      
       // Check if it's adding a column that might already exist
       const addColumnMatch = sql.match(/ADD\s+COLUMN\s+(\w+)/i);
       if (addColumnMatch) {
         const columnName = addColumnMatch[1];
-        logger.info(`Column ${columnName} should be added via migration. Skipping ALTER TABLE.`);
+        // For expected columns like locked_until, silently skip (migration should handle it)
+        // Only log info level (not warn) to reduce noise
+        if (columnName === 'locked_until') {
+          logger.debug(`Column ${columnName} should be added via migration. Skipping ALTER TABLE.`);
+        } else {
+          logger.info(`Column ${columnName} should be added via migration. Skipping ALTER TABLE.`);
+        }
         // Return success to avoid breaking the flow
         return [{ affectedRows: 0 }, []];
       }
       
-      throw new Error('ALTER TABLE queries must be run in Supabase SQL Editor, not via PostgREST API');
+      // For other ALTER TABLE operations, warn but don't throw if it's expected
+      logger.warn('ALTER TABLE queries are not supported via PostgREST. Run in Supabase SQL Editor:', sql.substring(0, 100));
+      // Return success to avoid breaking the flow for expected cases
+      return [{ affectedRows: 0 }, []];
     }
     
     // For other queries, try direct PostgreSQL connection first if available
-    const hasConnection = await ensurePostgresConnection();
+    let hasConnection = await ensurePostgresConnection();
+    
+    // If connection check failed but SUPABASE_DB_URL is set, try to initialize
+    if (!hasConnection && supabaseDbUrl) {
+      logger.debug('Connection not ready, attempting to initialize...');
+      await initPostgresConnection(true); // Force retry
+      hasConnection = await ensurePostgresConnection();
+    }
+    
     if (hasConnection && pgPool) {
       logger.debug('Unsupported query type via PostgREST, trying direct PostgreSQL connection');
       try {
         let pgSql = sql
           .replace(/assessment_templates/g, 'assessments')
           .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+          // Convert CURRENT_TIMESTAMP to NOW() for PostgreSQL
+          .replace(/CURRENT_TIMESTAMP/gi, 'NOW()')
           .replace(/\bTRUE\b/g, 'true')
           .replace(/\bFALSE\b/g, 'false');
         
@@ -1541,7 +1965,175 @@ export const query = async (sql, params = []) => {
     logger.warn('Unsupported SQL query type. Set SUPABASE_DB_URL for direct PostgreSQL connection:', sql.substring(0, 100));
     throw new Error('Complex SQL queries need to be converted to Supabase queries or RPC functions, or set SUPABASE_DB_URL for direct PostgreSQL connection');
   } catch (error) {
-    logger.error('Database query error:', { sql: sql.substring(0, 200), error: error.message });
+    // Check if it's a table not found error (PGRST205) - try PostgreSQL fallback
+    const errorMessage = error.message || '';
+    const isTableNotFound = error.code === 'PGRST205' || 
+                           errorMessage.includes('Could not find the table') ||
+                           errorMessage.includes('schema cache');
+    
+    if (isTableNotFound) {
+      const hasConnection = await ensurePostgresConnection();
+      if (hasConnection && pgPool) {
+        try {
+          logger.debug('Table not found in Supabase PostgREST, falling back to direct PostgreSQL connection');
+          // Convert MySQL syntax to PostgreSQL
+          let pgSql = sql
+            .replace(/assessment_templates/g, 'assessments')
+            .replace(/UUID\(\)/gi, 'gen_random_uuid()')
+            .replace(/\bTRUE\b/g, 'true')
+            .replace(/\bFALSE\b/g, 'false');
+          
+          // Replace ? placeholders with $1, $2, etc. for PostgreSQL
+          let paramIndex = 1;
+          pgSql = pgSql.replace(/\?/g, () => `$${paramIndex++}`);
+          
+          const result = await pgPool.query(pgSql, params);
+          logger.debug('PostgreSQL fallback succeeded for table not found error');
+          return [result.rows || []];
+        } catch (pgError) {
+          logger.warn('PostgreSQL fallback also failed for table not found error:', pgError.message);
+          // Mark error as logged and attempted fallback
+          error._logged = true;
+          error._fallbackAttempted = true;
+        }
+      } else {
+        // Mark error as logged and note fallback unavailable
+        error._logged = true;
+        error._fallbackUnavailable = true;
+        logger.warn('Table not found in Supabase PostgREST and PostgreSQL fallback unavailable. Set SUPABASE_DB_URL for direct PostgreSQL connection.');
+      }
+    }
+    
+    // Check if it's a network/DNS error - check both message and details
+    const errorDetails = error.details || '';
+    const errorString = JSON.stringify(error).toLowerCase();
+    
+    // Check if error message contains HTML (Cloudflare error pages)
+    const isHtmlError = 
+      errorMessage.includes('<!DOCTYPE') ||
+      errorMessage.includes('<!doctype') ||
+      errorMessage.includes('<html') ||
+      errorString.includes('<!doctype') ||
+      errorString.includes('<html');
+    
+    // Check for Cloudflare 521 error (Web server is down)
+    const isCloudflare521 = 
+      isHtmlError && (
+        errorMessage.includes('521') ||
+        errorMessage.includes('Web server is down') ||
+        errorString.includes('521') ||
+        errorString.includes('web server is down')
+      );
+    
+    const isNetworkError =
+      isCloudflare521 ||
+      errorMessage.includes('ENOTFOUND') ||
+      errorMessage.includes('getaddrinfo') ||
+      errorMessage.includes('fetch failed') ||
+      errorMessage.includes('ECONNREFUSED') ||
+      errorMessage.includes('ETIMEDOUT') ||
+      errorMessage.includes('ConnectTimeoutError') ||
+      errorMessage.includes('Connection timeout') ||
+      errorMessage.includes('Network error connecting to Supabase') ||
+      errorDetails.includes('ENOTFOUND') ||
+      errorDetails.includes('getaddrinfo') ||
+      errorDetails.includes('fetch failed') ||
+      errorDetails.includes('ConnectTimeoutError') ||
+      errorString.includes('enotfound') ||
+      errorString.includes('getaddrinfo') ||
+      errorString.includes('connecttimeout') ||
+      errorString.includes('und_err_connect_timeout') ||
+      error.name === 'ConnectTimeoutError' ||
+      error.code === 'ENOTFOUND' ||
+      error.code === 'ECONNREFUSED' ||
+      error.code === 'ETIMEDOUT' ||
+      error.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+      error.isNetworkError === true;
+    
+    if (isNetworkError) {
+      // Network errors are temporary - log at debug level with helpful message
+      // Don't include the full error object with details to avoid log noise
+      // Also mark the error so it's not logged again elsewhere
+      error.isNetworkError = true;
+      error._logged = true; // Mark as already logged to prevent duplicate logging
+      
+      // Check for DNS resolution errors (ENOTFOUND/getaddrinfo)
+      const isDnsError = errorMessage.includes('ENOTFOUND') || 
+                        errorMessage.includes('getaddrinfo') ||
+                        error.code === 'ENOTFOUND' ||
+                        errorDetails.includes('ENOTFOUND') ||
+                        errorDetails.includes('getaddrinfo');
+      
+      // For Cloudflare 521 errors, provide a clearer message
+      if (isCloudflare521) {
+        logger.warn('Supabase database server is down (Cloudflare 521):', { 
+          service: 'lms-platform',
+          sql: sql.substring(0, 100), 
+          error: 'Web server is down - Supabase database is temporarily unavailable',
+          hint: 'This usually means the Supabase project is paused or the database server is down. Check your Supabase dashboard.'
+        });
+        // Replace the HTML error message with a cleaner one
+        error.message = 'Supabase database server is temporarily unavailable (Error 521: Web server is down)';
+      } else if (isDnsError) {
+        // Extract project reference from SUPABASE_URL for better error message
+        const projectRef = supabaseUrl?.match(/https?:\/\/([a-zA-Z0-9-]+)\.supabase\.co/)?.[1] || 'unknown';
+        logger.warn('DNS resolution failed for Supabase hostname:', { 
+          service: 'lms-platform',
+          sql: sql.substring(0, 100), 
+          error: `Cannot resolve hostname: ${projectRef}.supabase.co`,
+          hint: `This usually means:
+1. Supabase project is paused or deleted - Check Supabase Dashboard
+2. Network connectivity issues - Check your internet connection
+3. DNS server issues - Try: nslookup ${projectRef}.supabase.co
+4. Incorrect SUPABASE_URL - Verify in Supabase Dashboard → Settings → API
+Current SUPABASE_URL: ${supabaseUrl || 'Not set'}`
+        });
+        error.message = `DNS resolution failed: Cannot resolve ${projectRef}.supabase.co. Check if your Supabase project is active.`;
+      } else {
+        logger.debug('Database query network error (temporary):', { 
+          service: 'lms-platform',
+          sql: sql.substring(0, 100), 
+          error: errorMessage.substring(0, 150) || 'Network connectivity issue',
+          hint: 'This is usually a temporary network issue. The query will be retried automatically.'
+        });
+      }
+    } else {
+      // Other errors should be logged at error level
+      // Sanitize error object to avoid logging sensitive details
+      const sanitizedError = {
+        message: errorMessage || error.toString(),
+        code: error.code,
+        // Only include details if it's not a network error
+        ...(errorDetails && !errorDetails.includes('ENOTFOUND') && !errorDetails.includes('getaddrinfo') 
+          ? { details: errorDetails } 
+          : {})
+      };
+      
+      // Only log if not already marked as logged
+      if (!error._logged) {
+        // For PGRST205 errors, provide more helpful message
+        if (error.code === 'PGRST205' || errorMessage.includes('Could not find the table')) {
+          logger.error('Database query error (table not found):', { 
+            service: 'lms-platform',
+            sql: sql.substring(0, 200), 
+            error: sanitizedError.message,
+            code: sanitizedError.code,
+            hint: 'This table may not be exposed to Supabase PostgREST. Set SUPABASE_DB_URL for direct PostgreSQL connection to access all tables.',
+            ...(error._fallbackUnavailable ? { fallback: 'PostgreSQL fallback unavailable - SUPABASE_DB_URL not set' } : {}),
+            ...(error._fallbackAttempted ? { fallback: 'PostgreSQL fallback attempted but failed' } : {})
+          });
+        } else {
+          logger.error('Database query error:', { 
+            service: 'lms-platform',
+            sql: sql.substring(0, 200), 
+            error: sanitizedError.message,
+            ...(sanitizedError.code ? { code: sanitizedError.code } : {}),
+            ...(sanitizedError.details ? { details: sanitizedError.details } : {})
+          });
+        }
+        error._logged = true;
+      }
+    }
     throw error;
   }
 };

@@ -301,8 +301,11 @@ const AssessmentManagementPage = () => {
   };
 
   const filteredCategories = categories.filter(category => {
-    const matchesSearch = category.name.toLowerCase().includes(categorySearchTerm.toLowerCase()) ||
-                         category.description?.toLowerCase().includes(categorySearchTerm.toLowerCase());
+    // FIX: Add null checks to prevent undefined errors
+    const categoryName = category?.name || '';
+    const categoryDescription = category?.description || '';
+    const matchesSearch = categoryName.toLowerCase().includes(categorySearchTerm.toLowerCase()) ||
+                         categoryDescription.toLowerCase().includes(categorySearchTerm.toLowerCase());
     const matchesParent = categoryFilterParent === 'all' || 
                          (categoryFilterParent === 'main' && category.parent_id === null) ||
                          (categoryFilterParent === 'sub' && category.parent_id !== null) ||
@@ -493,11 +496,14 @@ const AssessmentManagementPage = () => {
   };
 
   const filteredAssessments = assessments.filter(assessment => {
-    const matchesSearch = assessment.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         assessment.description?.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesType = filterType === 'all' || assessment.assessment_type === filterType;
-    const matchesStatus = filterStatus === 'all' || assessment.status === filterStatus;
-    const matchesDifficulty = filterDifficulty === 'all' || assessment.difficulty_level === filterDifficulty;
+    // FIX: Add null checks to prevent undefined errors
+    const assessmentTitle = assessment?.title || '';
+    const assessmentDescription = assessment?.description || '';
+    const matchesSearch = assessmentTitle.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         assessmentDescription.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesType = filterType === 'all' || assessment?.assessment_type === filterType;
+    const matchesStatus = filterStatus === 'all' || assessment?.status === filterStatus;
+    const matchesDifficulty = filterDifficulty === 'all' || assessment?.difficulty_level === filterDifficulty;
     
     return matchesSearch && matchesType && matchesStatus && matchesDifficulty;
   });
@@ -677,7 +683,7 @@ const AssessmentManagementPage = () => {
             return apiService.sendAssessmentNotification(assessmentId, assignment.target_id, {
               type: 'assessment_published',
               title: 'New Assessment Available',
-              message: `A new assessment "${assessment.title}" has been published and is now available for you to take.`
+              message: `A new assessment "${assessment?.title || 'Untitled Assessment'}" has been published and is now available for you to take.`
             });
           }
           return Promise.resolve();
@@ -1069,7 +1075,7 @@ const AssessmentManagementPage = () => {
                         <div className="flex items-start justify-between">
                           <div className="flex items-center space-x-2">
                             {getAssessmentTypeIcon(assessment.assessment_type)}
-                            <CardTitle className="text-lg">{assessment.title}</CardTitle>
+                            <CardTitle className="text-lg">{assessment?.title || 'Untitled Assessment'}</CardTitle>
                           </div>
                           <div className="flex items-center space-x-2">
                             <Select
@@ -1244,7 +1250,7 @@ const AssessmentManagementPage = () => {
                           <div className="flex items-start space-x-3 flex-1 min-w-0">
                             {getAssessmentTypeIcon(assessment.assessment_type)}
                             <div className="min-w-0 flex-1">
-                              <h3 className="font-semibold text-lg truncate">{assessment.title}</h3>
+                              <h3 className="font-semibold text-lg truncate">{assessment?.title || 'Untitled Assessment'}</h3>
                               {/* Description hidden as requested */}
                             </div>
                           </div>
@@ -1466,7 +1472,7 @@ const AssessmentManagementPage = () => {
                           <SelectItem value="sub">Subcategories</SelectItem>
                           {getParentCategories().map((category) => (
                             <SelectItem key={category.id} value={category.id}>
-                              {category.name} (Parent)
+                              {category?.name || 'Unnamed Category'} (Parent)
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1491,7 +1497,7 @@ const AssessmentManagementPage = () => {
                                 className="w-4 h-4 rounded-full"
                                 style={{ backgroundColor: category.color }}
                               />
-                              <CardTitle className="text-lg">{category.name}</CardTitle>
+                              <CardTitle className="text-lg">{category?.name || 'Unnamed Category'}</CardTitle>
                             </div>
                             <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
                               <Button
@@ -1843,7 +1849,7 @@ const AssessmentManagementPage = () => {
                     <SelectContent>
                       {categories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
-                          {category.name}
+                          {category?.name || 'Unnamed Category'}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1949,7 +1955,7 @@ const AssessmentManagementPage = () => {
                     <SelectItem value="none">No Parent</SelectItem>
                     {getParentCategories().map((category) => (
                       <SelectItem key={category.id} value={category.id}>
-                        {category.name}
+                        {category?.name || 'Unnamed Category'}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2031,7 +2037,7 @@ const AssessmentManagementPage = () => {
                     <SelectItem value="none">No Parent</SelectItem>
                     {getParentCategories().map((category) => (
                       <SelectItem key={category.id} value={category.id}>
-                        {category.name}
+                        {category?.name || 'Unnamed Category'}
                       </SelectItem>
                     ))}
                   </SelectContent>

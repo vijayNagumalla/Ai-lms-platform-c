@@ -27,8 +27,9 @@ if (!existsSync(envPath)) {
   console.log(`   ${envPath}`);
   console.log(`\n2. Copy from env.example:`);
   console.log(`   cp backend/env.example backend/.env`);
-  console.log(`\n3. Add your SUPABASE_DB_URL:`);
-  console.log(`   SUPABASE_DB_URL=postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay%402607%40@aws-0-ap-south-1.pooler.supabase.com:6543/postgres`);
+  console.log(`\n3. Add your SUPABASE_DB_URL (get it from Supabase Dashboard):`);
+  console.log(`   SUPABASE_DB_URL=postgresql://postgres.[PROJECT_REF]:[YOUR_PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres`);
+  console.log(`   Replace [PROJECT_REF], [YOUR_PASSWORD], and [REGION] with your actual values`);
   process.exit(1);
 }
 
@@ -75,8 +76,9 @@ if (supabaseDbUrl) {
 } else {
   console.log('❌ SUPABASE_DB_URL is NOT set!');
   console.log('\n📝 To fix this, add to your .env file:');
-  console.log('\n   SUPABASE_DB_URL=postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay%402607%40@aws-0-ap-south-1.pooler.supabase.com:6543/postgres');
-  console.log('\n   Or use the connection pooling string from Supabase Dashboard → Settings → Database\n');
+  console.log('\n   SUPABASE_DB_URL=postgresql://postgres.[PROJECT_REF]:[YOUR_PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres');
+  console.log('\n   Get the exact connection string from Supabase Dashboard → Settings → Database');
+  console.log('   Copy the entire connection string (it will have the password already set)\n');
 }
 
 // Check other Supabase variables

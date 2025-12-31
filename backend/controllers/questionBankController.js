@@ -152,7 +152,7 @@ export const getQuestionCategories = async (req, res) => {
     if (include_questions === 'true') {
       for (let category of categories) {
         const [questions] = await pool.execute(
-          'SELECT id, title, question_type, difficulty_level FROM questions WHERE category_id = ? AND status = "active"',
+          "SELECT id, title, question_type, difficulty_level FROM questions WHERE category_id = ? AND status = 'active'",
           [category.id]
         );
         category.questions = questions;

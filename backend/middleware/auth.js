@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { pool } from '../config/database.js';
+import cache from '../utils/cache.js';
 
 export const authenticateToken = async (req, res, next) => {
   try {
@@ -22,20 +23,30 @@ export const authenticateToken = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Get user from database to ensure they still exist and are active
-    const [users] = await pool.execute(
-      'SELECT id, email, name, role, college_id, department, student_id, phone, avatar_url, country, is_active FROM users WHERE id = ? AND is_active = TRUE',
-      [decoded.userId]
-    );
+    // PERFORMANCE FIX: Cache user data to avoid database query on every request
+    const userCacheKey = `auth_user_${decoded.userId}`;
+    let user = cache.get(userCacheKey);
+    
+    if (!user) {
+      // Get user from database to ensure they still exist and are active
+      const [users] = await pool.execute(
+        'SELECT id, email, name, role, college_id, department, student_id, phone, avatar_url, country, is_active FROM users WHERE id = ? AND is_active = TRUE',
+        [decoded.userId]
+      );
 
-    if (users.length === 0) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'User not found or inactive' 
-      });
+      if (users.length === 0) {
+        return res.status(401).json({ 
+          success: false, 
+          message: 'User not found or inactive' 
+        });
+      }
+
+      user = users[0];
+      // Cache for 1 minute (user data doesn't change frequently)
+      cache.set(userCacheKey, user, 60 * 1000);
     }
 
-    req.user = users[0];
+    req.user = user;
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

@@ -3,8 +3,20 @@
  * and the public landing page hero counters.
  * Uses direct Supabase queries for better reliability in production.
  * Falls back to direct SQL queries if Supabase is unavailable.
+ * 
+ * PERFORMANCE FIX: Added caching to reduce database load
  */
+import cache from '../utils/cache.js';
+
 export const getPlatformStatsSnapshot = async () => {
+  // Check cache first
+  const cacheKey = 'platform_stats_snapshot';
+  const cached = cache.get(cacheKey);
+  if (cached !== null) {
+    console.log('[PlatformStats] Returning cached stats');
+    return cached;
+  }
+
   try {
     // Dynamically import supabase and pool to ensure they're initialized
     let supabase;
@@ -23,8 +35,9 @@ export const getPlatformStatsSnapshot = async () => {
       // Fall through to SQL fallback
     }
 
-    // Try Supabase first if available
-    if (supabase) {
+    // PERFORMANCE FIX: Prefer direct SQL for COUNT queries (faster than Supabase)
+    // Only use Supabase if direct SQL pool is not available
+    if (!pool && supabase) {
       try {
         console.log('[PlatformStats] Starting to fetch stats with Supabase...');
       
@@ -130,6 +143,9 @@ export const getPlatformStatsSnapshot = async () => {
           totalSubmissions: submissionResult?.count ?? 0,
         };
         
+        // Cache for 2 minutes (stats don't change frequently)
+        cache.set(cacheKey, stats, 2 * 60 * 1000);
+        
         console.log('[PlatformStats] Successfully fetched stats via Supabase:', stats);
         return stats;
       } catch (supabaseError) {
@@ -144,8 +160,8 @@ export const getPlatformStatsSnapshot = async () => {
       }
     }
 
-    // FALLBACK: Use direct SQL queries if Supabase fails or is unavailable
-    console.log('[PlatformStats] Using SQL fallback for stats...');
+    // PERFORMANCE FIX: Use direct SQL queries (preferred - faster than Supabase for COUNT queries)
+    // This is the primary path when pool is available, or fallback if Supabase failed
     if (!pool) {
       console.error('[PlatformStats] Neither Supabase nor SQL pool available');
       return {
@@ -158,20 +174,17 @@ export const getPlatformStatsSnapshot = async () => {
     }
 
     try {
-      // Use direct SQL queries as fallback
+      console.log('[PlatformStats] Using direct SQL for stats (fastest method)...');
+      // PERFORMANCE FIX: Use direct SQL queries in parallel for maximum speed
+      // Direct SQL is typically faster than Supabase for simple COUNT queries
       // Handle both MySQL [rows, fields] and PostgreSQL [rows] formats
-      const userResult = await pool.execute(
-        'SELECT COUNT(*) as count FROM users WHERE is_active = true'
-      );
-      const collegeResult = await pool.execute(
-        'SELECT COUNT(*) as count FROM colleges WHERE is_active = true'
-      );
-      const assessmentResult = await pool.execute(
-        'SELECT COUNT(*) as count FROM assessments WHERE is_published = true'
-      );
-      const submissionResult = await pool.execute(
-        'SELECT COUNT(*) as count FROM assessment_submissions'
-      );
+      const [userResult, collegeResult, departmentResult, assessmentResult, submissionResult] = await Promise.all([
+        pool.execute('SELECT COUNT(*) as count FROM users WHERE is_active = true'),
+        pool.execute('SELECT COUNT(*) as count FROM colleges WHERE is_active = true'),
+        pool.execute('SELECT COUNT(*) as count FROM departments WHERE is_active = true'),
+        pool.execute('SELECT COUNT(*) as count FROM assessments WHERE is_published = true'),
+        pool.execute('SELECT COUNT(*) as count FROM assessment_submissions')
+      ]);
 
       // Extract rows from result (handles both [rows, fields] and [rows] formats)
       const getUserCount = (result) => {
@@ -186,15 +199,18 @@ export const getPlatformStatsSnapshot = async () => {
       const stats = {
         activeUsers: getUserCount(userResult),
         totalColleges: getUserCount(collegeResult),
-        totalDepartments: 0, // Not needed for public stats
+        totalDepartments: getUserCount(departmentResult),
         totalAssessments: getUserCount(assessmentResult),
         totalSubmissions: getUserCount(submissionResult),
       };
 
-      console.log('[PlatformStats] Successfully fetched stats via SQL fallback:', stats);
+      // Cache for 2 minutes (stats don't change frequently)
+      cache.set(cacheKey, stats, 2 * 60 * 1000);
+
+      console.log('[PlatformStats] Successfully fetched stats via direct SQL:', stats);
       return stats;
     } catch (sqlError) {
-      console.error('[PlatformStats] SQL fallback also failed:', sqlError);
+      console.error('[PlatformStats] SQL query failed:', sqlError);
       console.error('[PlatformStats] SQL error message:', sqlError?.message);
       console.error('[PlatformStats] SQL error stack:', sqlError?.stack);
       

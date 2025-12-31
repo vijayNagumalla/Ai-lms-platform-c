@@ -14,12 +14,19 @@ const envPath = join(__dirname, '..', '.env');
 console.log('\n🔧 Fixing Shared Pooler Connection String\n');
 
 // Connection details from Supabase
-const hostname = 'aws-1-ap-south-1.pooler.supabase.com';
-const port = '5432';  // Shared Pooler uses 5432, not 6543!
-const database = 'postgres';
-const user = 'postgres.zhacsxhsjgfnniefmadh';
-const password = 'Vijay@2607@';  // Raw password
-const encodedPassword = 'Vijay%402607%40';  // URL-encoded
+// SECURITY FIX: Read from environment variables instead of hardcoding
+const hostname = process.env.SUPABASE_POOLER_HOST || 'aws-1-ap-south-1.pooler.supabase.com';
+const port = process.env.SUPABASE_POOLER_PORT || '5432';  // Shared Pooler uses 5432, not 6543!
+const database = process.env.SUPABASE_DB_NAME || 'postgres';
+const user = process.env.SUPABASE_DB_USER || 'postgres.zhacsxhsjgfnniefmadh';
+// SECURITY FIX: Password must be provided via environment variable
+const password = process.env.SUPABASE_DB_PASSWORD;
+if (!password) {
+  console.error('❌ ERROR: SUPABASE_DB_PASSWORD environment variable is required');
+  console.error('   Set it in your .env file or export it before running this script');
+  process.exit(1);
+}
+const encodedPassword = encodeURIComponent(password);  // URL-encode the password
 
 // Build correct connection string
 const connectionString = `postgresql://${user}:${encodedPassword}@${hostname}:${port}/${database}`;

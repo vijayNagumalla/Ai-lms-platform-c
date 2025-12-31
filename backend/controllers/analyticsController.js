@@ -3,7 +3,9 @@ import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { getPlatformStatsSnapshot } from '../services/platformStatsService.js';
+import cache from '../utils/cache.js';
 
 // Test analytics connection
 export const testAnalyticsConnection = async (req, res) => {
@@ -53,6 +55,29 @@ export const getAnalyticsData = async (req, res) => {
     const userCollegeId = currentUser.college_id;
     const userDepartment = currentUser.department;
     const userId = currentUser.id;
+
+    // PERFORMANCE FIX: Cache analytics data based on query parameters and user
+    // Increase cache time for common queries to reduce database load
+    const cacheKey = `analytics_data_${userId}_${viewType}_${collegeId || 'all'}_${departmentId || 'all'}_${studentId || 'all'}_${dateRange}_${assessmentType}_${startDate || 'none'}_${endDate || 'none'}`;
+    
+    // Generate consistent ETag from cache key (same ETag for same cache key)
+    const etag = `"${crypto.createHash('md5').update(cacheKey).digest('hex').substring(0, 16)}"`;
+    
+    // Check if client sent If-None-Match header - handle 304 early for maximum speed
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch === etag) {
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=180');
+      return res.status(304).end(); // Fast 304 response - no cache lookup, no processing
+    }
+    
+    const cached = cache.get(cacheKey);
+    if (cached !== null) {
+      // Set cache headers for client-side caching
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=180'); // 3 minutes
+      return res.json(cached);
+    }
 
     // Apply role-based filtering - create different filters for different contexts
     let roleBasedFilter = '';
@@ -169,115 +194,89 @@ export const getAnalyticsData = async (req, res) => {
       dateParams.push(studentId);
     }
 
-    // Get summary statistics with role-based filtering
-    // Create parameter arrays for each subquery
+    // PERFORMANCE FIX: Prepare all query parameters first, then run all queries in parallel
     const templateParams = roleBasedFilterForTemplates ? [...roleBasedParams] : [];
     const submissionParams = roleBasedFilterForSubmissions ? [...roleBasedParams] : [];
 
-
-    const [summaryStats] = await pool.execute(`
-      SELECT 
-        (SELECT COUNT(*) FROM assessments at 
-         LEFT JOIN users u ON at.created_by = u.id 
-         WHERE at.is_published = true ${roleBasedFilterForTemplates}) as totalAssessments,
-        (SELECT COUNT(DISTINCT sub.student_id) FROM assessment_submissions sub
-         LEFT JOIN users u ON sub.student_id = u.id 
-         WHERE 1=1 ${roleBasedFilterForSubmissions}) as activeStudents,
-        (SELECT COALESCE(AVG(sub.percentage_score), 0) FROM assessment_submissions sub
-         LEFT JOIN users u ON sub.student_id = u.id 
-         WHERE sub.percentage_score IS NOT NULL ${roleBasedFilterForSubmissions}) as averageScore,
-        (SELECT 
-          CASE 
-            WHEN COUNT(*) > 0 THEN 
-              COUNT(CASE WHEN sub.status = 'submitted' OR sub.status = 'graded' THEN 1 END) * 100.0 / COUNT(*)
-            ELSE 0 
-          END 
-         FROM assessment_submissions sub
-         LEFT JOIN users u ON sub.student_id = u.id 
-         WHERE 1=1 ${roleBasedFilterForSubmissions}) as completionRate,
-        (SELECT COUNT(*) FROM assessment_submissions sub
-         LEFT JOIN users u ON sub.student_id = u.id 
-         WHERE 1=1 ${roleBasedFilterForSubmissions}) as totalSubmissions
-    `, [
-      ...templateParams,
-      ...submissionParams,
-      ...submissionParams,
-      ...submissionParams,
-      ...submissionParams
-    ]);
-
-    // MEDIUM FIX: Add pagination support for college stats
-    const collegeLimit = Math.min(parseInt(req.query.collegeLimit) || 50, 200); // Max 200, default 50
+    // Prepare pagination parameters for all queries
+    const collegeLimit = Math.min(parseInt(req.query.collegeLimit) || 50, 200);
     const collegeOffset = parseInt(req.query.collegeOffset) || 0;
+    const departmentLimit = Math.min(parseInt(req.query.departmentLimit) || 50, 200);
+    const departmentOffset = parseInt(req.query.departmentOffset) || 0;
+    const studentLimit = Math.min(parseInt(req.query.studentLimit) || 100, 500);
+    const studentOffset = parseInt(req.query.studentOffset) || 0;
+    const assessmentLimit = Math.min(parseInt(req.query.assessmentLimit) || 100, 500);
+    const assessmentOffset = parseInt(req.query.assessmentOffset) || 0;
 
-    // Get college-wise statistics with role-based filtering
-    // CRITICAL FIX: Use collegeParams array with correct parameter order
-    // Build the final params array: college filter (if any) + date filter + pagination
-    // collegeParams already includes: [collegeId?] + [dateRange or startDate, endDate]
-    // Ensure all parameters are valid (not NaN) and properly typed
+    // Validate all pagination parameters
+    const safeLimit = parseInt(collegeLimit);
+    const safeOffset = parseInt(collegeOffset);
+    const safeDepartmentLimit = parseInt(departmentLimit);
+    const safeDepartmentOffset = parseInt(departmentOffset);
+    const safeStudentLimit = parseInt(studentLimit);
+    const safeStudentOffset = parseInt(studentOffset);
+    const safeAssessmentLimit = parseInt(assessmentLimit);
+    const safeAssessmentOffset = parseInt(assessmentOffset);
+
+    if (isNaN(safeLimit) || isNaN(safeOffset) || safeLimit < 0 || safeOffset < 0 ||
+        isNaN(safeDepartmentLimit) || isNaN(safeDepartmentOffset) || safeDepartmentLimit < 0 || safeDepartmentOffset < 0 ||
+        isNaN(safeStudentLimit) || isNaN(safeStudentOffset) || safeStudentLimit < 0 || safeStudentOffset < 0 ||
+        isNaN(safeAssessmentLimit) || isNaN(safeAssessmentOffset) || safeAssessmentLimit < 0 || safeAssessmentOffset < 0) {
+      throw new Error('Invalid pagination parameters');
+    }
+
+    // Prepare college query parameters
     const validCollegeParams = collegeParams.map(p => {
-      // If it's already a number, return it
-      if (typeof p === 'number' && !isNaN(p)) {
-        return p;
-      }
-      // If it's a date string, keep it as is
-      if (typeof p === 'string' && !isNaN(Date.parse(p))) {
-        return p;
-      }
-      // Try to parse as number
+      if (typeof p === 'number' && !isNaN(p)) return p;
+      if (typeof p === 'string' && !isNaN(Date.parse(p))) return p;
       const num = parseInt(p);
       return isNaN(num) ? p : num;
     });
 
-    // Ensure limit and offset are numbers
-    const finalLimit = typeof collegeLimit === 'number' && !isNaN(collegeLimit) ? collegeLimit : 50;
-    const finalOffset = typeof collegeOffset === 'number' && !isNaN(collegeOffset) ? collegeOffset : 0;
-
-    // Build final parameter array - validCollegeParams already includes college filter (if any) + date filter
-    // validCollegeParams should always have at least the date parameter
     if (validCollegeParams.length === 0) {
       throw new Error('validCollegeParams is empty - date parameter should always be present');
     }
 
-    // CRITICAL FIX: MySQL doesn't support parameterized LIMIT/OFFSET, so we need to interpolate them directly
-    // Ensure limit and offset are safe integers to prevent SQL injection
-    const safeLimit = parseInt(finalLimit);
-    const safeOffset = parseInt(finalOffset);
-    if (isNaN(safeLimit) || isNaN(safeOffset) || safeLimit < 0 || safeOffset < 0) {
-      throw new Error(`Invalid pagination parameters: limit=${finalLimit}, offset=${finalOffset}`);
-    }
-
     const collegeQueryParams = [...validCollegeParams];
-
-    // Final validation - ensure no undefined or null values
-    const hasInvalidParams = collegeQueryParams.some(p => p === undefined || p === null || (typeof p === 'number' && isNaN(p)));
-    if (hasInvalidParams) {
-      throw new Error(`Invalid parameters detected: ${JSON.stringify(collegeQueryParams)}`);
-    }
-
-    // Count placeholders vs parameters
     const collegeFilterPlaceholders = (collegeFilter.match(/\?/g) || []).length;
     const dateFilterPlaceholders = (dateFilter.match(/\?/g) || []).length;
     const totalPlaceholders = collegeFilterPlaceholders + dateFilterPlaceholders;
 
     if (collegeQueryParams.length !== totalPlaceholders) {
-      console.error('CRITICAL: Parameter count mismatch in college stats query!', {
-        collegeFilter,
-        dateFilter,
-        collegeFilterPlaceholders,
-        dateFilterPlaceholders,
-        totalPlaceholders,
-        paramsCount: collegeQueryParams.length,
-        params: collegeQueryParams,
-        collegeParams: collegeParams,
-        validCollegeParams: validCollegeParams,
-        finalLimit: safeLimit,
-        finalOffset: safeOffset
-      });
-      throw new Error(`Parameter count mismatch: Expected ${totalPlaceholders} parameters but got ${collegeQueryParams.length}. Params: ${JSON.stringify(collegeQueryParams)}`);
+      throw new Error(`Parameter count mismatch: Expected ${totalPlaceholders} parameters but got ${collegeQueryParams.length}`);
     }
 
-    // Build the SQL query string
+    // Prepare assessment stats parameters
+    const assessmentStatsParams = [];
+    if (collegeId && collegeId !== 'all') {
+      assessmentStatsParams.push(collegeId, collegeId, collegeId, collegeId, collegeId, collegeId);
+    }
+    if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
+      assessmentStatsParams.push(startDate, endDate);
+    } else {
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      assessmentStatsParams.push(cutoffDateStr);
+    }
+
+    // Prepare score distribution parameters
+    const scoreDistributionParams = [];
+    if (collegeId && collegeId !== 'all') {
+      scoreDistributionParams.push(collegeId);
+    }
+    if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
+      scoreDistributionParams.push(startDate, endDate);
+    } else {
+      const dateRangeNum = parseInt(dateRange) || 30;
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
+      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
+      scoreDistributionParams.push(cutoffDateStr);
+    }
+
+    // Build college query SQL
     let collegeQuerySQL = `
       SELECT 
         c.id,
@@ -288,40 +287,58 @@ export const getAnalyticsData = async (req, res) => {
         COUNT(CASE WHEN sub.status = 'submitted' OR sub.status = 'graded' THEN 1 END) as completedAssessments,
         COUNT(sub.id) as totalSubmissions
       FROM colleges c
-      LEFT JOIN assessments at ON (at.college_id = c.id OR at.college_id IS NULL) AND at.is_published = true
+      LEFT JOIN assessments at ON at.college_id = c.id AND at.is_published = true
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
-      LEFT JOIN users u ON sub.student_id = u.id
       WHERE c.is_active = true
-    `;
-
-    // Add filters in correct order
-    if (collegeFilter) {
-      collegeQuerySQL += ` ${collegeFilter}`;
-    }
-    collegeQuerySQL += ` ${dateFilter}`;
-    // CRITICAL FIX: Interpolate LIMIT and OFFSET directly (they're validated as safe integers above)
-    collegeQuerySQL += `
+      ${collegeFilter || ''}
+      ${dateFilter}
       GROUP BY c.id, c.name
       ORDER BY averageScore DESC
       LIMIT ${safeLimit} OFFSET ${safeOffset}
     `;
 
-    const [collegeStats] = await pool.execute(collegeQuerySQL, collegeQueryParams);
-
-    // MEDIUM FIX: Add pagination support for department stats
-    const departmentLimit = Math.min(parseInt(req.query.departmentLimit) || 50, 200); // Max 200, default 50
-    const departmentOffset = parseInt(req.query.departmentOffset) || 0;
-
-    // CRITICAL FIX: MySQL doesn't support parameterized LIMIT/OFFSET, so we need to interpolate them directly
-    const safeDepartmentLimit = parseInt(departmentLimit);
-    const safeDepartmentOffset = parseInt(departmentOffset);
-    if (isNaN(safeDepartmentLimit) || isNaN(safeDepartmentOffset) || safeDepartmentLimit < 0 || safeDepartmentOffset < 0) {
-      throw new Error(`Invalid pagination parameters: limit=${departmentLimit}, offset=${departmentOffset}`);
-    }
-
-    // Get department-wise statistics with role-based filtering
-    // CRITICAL FIX: Department query doesn't have dateFilter, so only pass departmentParams (no date params)
-    const [departmentStats] = await pool.execute(`
+    // PERFORMANCE FIX: Run all queries in parallel for maximum speed
+    const [
+      summaryStatsResult,
+      collegeStatsResult,
+      departmentStatsResult,
+      studentStatsResult,
+      assessmentStatsResult,
+      scoreDistributionResult,
+      submissionPatternsResult
+    ] = await Promise.all([
+      // Summary stats query
+      pool.execute(`
+      WITH filtered_assessments AS (
+        SELECT COUNT(*) as total FROM assessments at 
+        LEFT JOIN users u ON at.created_by = u.id 
+        WHERE at.is_published = true ${roleBasedFilterForTemplates}
+      ),
+      filtered_submissions AS (
+        SELECT 
+          COUNT(DISTINCT sub.student_id) as active_students,
+          COALESCE(AVG(CASE WHEN sub.percentage_score IS NOT NULL THEN sub.percentage_score END), 0) as avg_score,
+          COUNT(*) as total_submissions,
+          COUNT(CASE WHEN sub.status = 'submitted' OR sub.status = 'graded' THEN 1 END) as completed_count
+        FROM assessment_submissions sub
+        LEFT JOIN users u ON sub.student_id = u.id 
+        WHERE 1=1 ${roleBasedFilterForSubmissions}
+      )
+      SELECT 
+        (SELECT total FROM filtered_assessments) as totalAssessments,
+        (SELECT active_students FROM filtered_submissions) as activeStudents,
+        (SELECT avg_score FROM filtered_submissions) as averageScore,
+        CASE 
+          WHEN (SELECT total_submissions FROM filtered_submissions) > 0 THEN 
+            (SELECT completed_count FROM filtered_submissions) * 100.0 / (SELECT total_submissions FROM filtered_submissions)
+          ELSE 0 
+        END as completionRate,
+        (SELECT total_submissions FROM filtered_submissions) as totalSubmissions
+    `, [...templateParams, ...submissionParams]),
+      // College stats query
+      pool.execute(collegeQuerySQL, collegeQueryParams),
+      // Department stats query
+      pool.execute(`
       SELECT 
         d.id,
         d.name,
@@ -336,25 +353,13 @@ export const getAnalyticsData = async (req, res) => {
       LEFT JOIN assessment_submissions sub ON at.id = sub.assessment_id
       LEFT JOIN users u ON sub.student_id = u.id
       WHERE d.is_active = true
-      ${collegeFilter}
+      ${collegeFilter || ''}
       GROUP BY d.id, d.name, c.name
       ORDER BY averageScore DESC
       LIMIT ${safeDepartmentLimit} OFFSET ${safeDepartmentOffset}
-    `, [...departmentParams]);
-
-    // MEDIUM FIX: Add pagination support for student stats
-    const studentLimit = Math.min(parseInt(req.query.studentLimit) || 100, 500); // Max 500, default 100
-    const studentOffset = parseInt(req.query.studentOffset) || 0;
-
-    // CRITICAL FIX: MySQL doesn't support parameterized LIMIT/OFFSET, so we need to interpolate them directly
-    const safeStudentLimit = parseInt(studentLimit);
-    const safeStudentOffset = parseInt(studentOffset);
-    if (isNaN(safeStudentLimit) || isNaN(safeStudentOffset) || safeStudentLimit < 0 || safeStudentOffset < 0) {
-      throw new Error(`Invalid pagination parameters: limit=${studentLimit}, offset=${studentOffset}`);
-    }
-
-    // Get student-wise statistics with role-based filtering and pagination
-    const [studentStats] = await pool.execute(`
+    `, [...departmentParams]),
+      // Student stats query
+      pool.execute(`
       SELECT 
         u.id,
         u.name,
@@ -374,36 +379,9 @@ export const getAnalyticsData = async (req, res) => {
       GROUP BY u.id, u.name, u.email, c.name, u.department
       ORDER BY averageScore DESC
       LIMIT ${safeStudentLimit} OFFSET ${safeStudentOffset}
-    `, [...roleBasedParams]);
-
-    // MEDIUM FIX: Add pagination support for assessment stats
-    const assessmentLimit = Math.min(parseInt(req.query.assessmentLimit) || 100, 500); // Max 500, default 100
-    const assessmentOffset = parseInt(req.query.assessmentOffset) || 0;
-
-    // CRITICAL FIX: MySQL doesn't support parameterized LIMIT/OFFSET, so we need to interpolate them directly
-    const safeAssessmentLimit = parseInt(assessmentLimit);
-    const safeAssessmentOffset = parseInt(assessmentOffset);
-    if (isNaN(safeAssessmentLimit) || isNaN(safeAssessmentOffset) || safeAssessmentLimit < 0 || safeAssessmentOffset < 0) {
-      throw new Error(`Invalid pagination parameters: limit=${assessmentLimit}, offset=${assessmentOffset}`);
-    }
-
-    // Get assessment-wise statistics with role-based filtering
-    const assessmentStatsParams = [];
-    if (collegeId && collegeId !== 'all') {
-      assessmentStatsParams.push(collegeId, collegeId, collegeId, collegeId, collegeId, collegeId);
-    }
-    if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
-      assessmentStatsParams.push(startDate, endDate);
-    } else {
-      // Use the same calculated cutoff date that dateFilter uses
-      const dateRangeNum = parseInt(dateRange) || 30;
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
-      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
-      assessmentStatsParams.push(cutoffDateStr);
-    }
-
-    const [assessmentStats] = await pool.execute(`
+    `, [...roleBasedParams]),
+      // Assessment stats query
+      pool.execute(`
       SELECT 
         at.id,
         at.title,
@@ -421,25 +399,9 @@ export const getAnalyticsData = async (req, res) => {
       GROUP BY at.id, at.title
       ORDER BY averageScore DESC
       LIMIT ${safeAssessmentLimit} OFFSET ${safeAssessmentOffset}
-    `, [...assessmentStatsParams]);
-
-    // Get score distribution with role-based filtering
-    const scoreDistributionParams = [];
-    if (collegeId && collegeId !== 'all') {
-      scoreDistributionParams.push(collegeId);
-    }
-    if (startDate && endDate && startDate !== 'null' && endDate !== 'null') {
-      scoreDistributionParams.push(startDate, endDate);
-    } else {
-      // Use the same calculated cutoff date that dateFilter uses
-      const dateRangeNum = parseInt(dateRange) || 30;
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - dateRangeNum);
-      const cutoffDateStr = cutoffDate.toISOString().split('T')[0] + ' 00:00:00';
-      scoreDistributionParams.push(cutoffDateStr);
-    }
-
-    const [scoreDistribution] = await pool.execute(`
+    `, [...assessmentStatsParams]),
+      // Score distribution query
+      pool.execute(`
       SELECT 
         CASE 
           WHEN sub.percentage_score >= 90 THEN '90-100%'
@@ -464,10 +426,9 @@ export const getAnalyticsData = async (req, res) => {
           WHEN '60-69%' THEN 4
           ELSE 5
         END
-    `, scoreDistributionParams);
-
-    // Get submission patterns over time with role-based filtering
-    const [submissionPatterns] = await pool.execute(`
+    `, scoreDistributionParams),
+      // Submission patterns query
+      pool.execute(`
       SELECT 
         DATE(sub.submitted_at) as date,
         COUNT(*) as submissions,
@@ -480,7 +441,17 @@ export const getAnalyticsData = async (req, res) => {
       GROUP BY DATE(sub.submitted_at)
       ORDER BY date DESC
       LIMIT 30
-    `, collegeId && collegeId !== 'all' ? [collegeId] : []);
+    `, collegeId && collegeId !== 'all' ? [collegeId] : [])
+    ]);
+
+    // Extract results from parallel queries
+    const [summaryStats] = summaryStatsResult;
+    const [collegeStats] = collegeStatsResult;
+    const [departmentStats] = departmentStatsResult;
+    const [studentStats] = studentStatsResult;
+    const [assessmentStats] = assessmentStatsResult;
+    const [scoreDistribution] = scoreDistributionResult;
+    const [submissionPatterns] = submissionPatternsResult;
 
     // Get assessment type performance with role-based filtering
     const assessmentTypePerformanceParams = [];
@@ -513,7 +484,7 @@ export const getAnalyticsData = async (req, res) => {
     const processedSubmissionPatterns = submissionPatterns.map(convertNumericFields);
     const processedAssessmentTypePerformance = assessmentTypePerformance.map(convertNumericFields);
 
-    res.json({
+    const response = {
       success: true,
       data: {
         summary: processedSummary,
@@ -537,7 +508,18 @@ export const getAnalyticsData = async (req, res) => {
           endDate
         }
       }
-    });
+    };
+
+    // Cache for 3 minutes (analytics data changes less frequently)
+    // ETag already calculated at the beginning of the function - reuse it
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'private, max-age=180'); // 3 minutes
+    
+    // Note: 304 check already handled early in the function, no need to check again
+    
+    cache.set(cacheKey, response, 3 * 60 * 1000);
+
+    res.json(response);
 
   } catch (error) {
     console.error('Analytics data error:', error);

@@ -125,6 +125,18 @@ const AuthPortal = ({ mode = 'login' }) => {
           title: 'Welcome back!',
           description: 'You have successfully logged in.'
         });
+        // Navigate to appropriate dashboard based on user role
+        // Use setTimeout to ensure state is updated before navigation
+        setTimeout(() => {
+          const dashboardPath = user.role === 'super-admin' 
+            ? '/dashboard/super-admin'
+            : user.role === 'college-admin'
+            ? '/dashboard/college-admin'
+            : user.role === 'faculty'
+            ? '/dashboard/faculty'
+            : '/dashboard/student';
+          navigate(dashboardPath, { replace: true });
+        }, 100);
       } else {
         // If email verification is required, surface a friendlier message
         if (user?.requiresEmailVerification) {

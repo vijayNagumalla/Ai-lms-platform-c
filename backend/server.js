@@ -399,11 +399,30 @@ process.on('uncaughtException', async (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection', { 
-    promise: promise.toString(), 
-    reason: reason instanceof Error ? reason.message : String(reason),
-    stack: reason instanceof Error ? reason.stack : undefined
-  });
+  // Check if it's a network/DNS error (common with Supabase when URL is invalid)
+  const isNetworkError = 
+    (reason instanceof Error && (
+      reason.message?.includes('ENOTFOUND') ||
+      reason.message?.includes('getaddrinfo') ||
+      reason.message?.includes('fetch failed') ||
+      reason.message?.includes('ECONNREFUSED') ||
+      reason.message?.includes('ETIMEDOUT')
+    )) ||
+    (typeof reason === 'object' && reason?.details?.includes('ENOTFOUND'));
+  
+  if (isNetworkError) {
+    // Network errors are usually temporary - log at debug level
+    logger.debug('Unhandled network error (likely temporary):', { 
+      reason: reason instanceof Error ? reason.message?.substring(0, 150) : String(reason).substring(0, 150),
+      hint: 'This is usually a temporary network issue or incorrect SUPABASE_URL configuration'
+    });
+  } else {
+    logger.error('Unhandled Rejection', { 
+      promise: promise.toString(), 
+      reason: reason instanceof Error ? reason.message : String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined
+    });
+  }
 });
 
 // Register shutdown handlers

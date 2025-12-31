@@ -253,3 +253,4 @@ After setting up all environment variables:
 - See `VERCEL_DEPLOYMENT_FIX.md` for CORS-related issues
 - Check Supabase Dashboard for database connection issues
 
+

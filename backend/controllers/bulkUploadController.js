@@ -300,7 +300,7 @@ export const processBulkUpload = async (req, res) => {
 
           if (rollNumber) {
             const [studentsByRoll] = await connection.execute(
-              'SELECT id, name, email FROM users WHERE student_id = ? AND role = "student"',
+              "SELECT id, name, email FROM users WHERE student_id = ? AND role = 'student'",
               [rollNumber.toString().trim()]
             );
             if (studentsByRoll.length > 0) {
@@ -312,7 +312,7 @@ export const processBulkUpload = async (req, res) => {
           // If not found by roll number, try email
           if (!studentId && emailId) {
             const [studentsByEmail] = await connection.execute(
-              'SELECT id, name, email FROM users WHERE email = ? AND role = "student"',
+              "SELECT id, name, email FROM users WHERE email = ? AND role = 'student'",
               [emailId.toString().trim()]
             );
             if (studentsByEmail.length > 0) {

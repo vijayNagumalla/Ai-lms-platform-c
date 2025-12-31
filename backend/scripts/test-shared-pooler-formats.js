@@ -13,15 +13,23 @@ const __dirname = dirname(__filename);
 
 dotenv.config({ path: join(__dirname, '..', '.env') });
 
-const projectRef = 'zhacsxhsjgfnniefmadh';
-const region = 'ap-south-1';
+// SECURITY FIX: Read from environment variables
+const projectRef = process.env.SUPABASE_PROJECT_REF || 'zhacsxhsjgfnniefmadh';
+const region = process.env.SUPABASE_REGION || 'ap-south-1';
 const hostname = `aws-1-${region}.pooler.supabase.com`;
+
+// SECURITY FIX: Get password from environment variable
+const rawPassword = process.env.SUPABASE_DB_PASSWORD;
+if (!rawPassword) {
+  console.error('❌ ERROR: SUPABASE_DB_PASSWORD environment variable is required');
+  console.error('   Set it in your backend/.env file');
+  process.exit(1);
+}
 
 // Test different password formats
 const passwords = [
-  'Vijay%402607%40',  // Current (URL-encoded)
-  'Vijay@2607@',      // Raw password (not encoded)
-  encodeURIComponent('Vijay@2607@'), // Re-encoded
+  encodeURIComponent(rawPassword),  // URL-encoded (recommended)
+  rawPassword,                      // Raw password (not encoded)
 ];
 
 // Test different username formats

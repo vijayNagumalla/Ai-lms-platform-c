@@ -1,11 +1,21 @@
-import { pool } from '../config/database.js';
+import { pool, supabase } from '../config/database.js';
 import { randomUUID } from 'crypto';
+import crypto from 'crypto';
 import codingPlatformService from '../services/codingPlatformService.js';
 import platformScraperService from '../services/platformScraperService.js';
 import browserScraperService from '../services/browserScraperService.js';
 import fastScraperService from '../services/fastScraperService.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roleCheck.js';
+import LRUCache from 'lru-cache';
+import cache from '../utils/cache.js';
+
+// Cache for student roll number to UUID mappings (5 minute TTL, max 1000 entries)
+const studentIdCache = new LRUCache({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+  updateAgeOnGet: true
+});
 
 // Get all coding platforms
 export const getCodingPlatforms = async (req, res) => {
@@ -28,150 +38,354 @@ export const getCodingPlatforms = async (req, res) => {
 
 // Get all students coding profiles (SuperAdmin only)
 export const getAllStudentsCodingProfiles = async (req, res) => {
+  const debugId = `[DEBUG-${Date.now()}]`;
+  console.log(`${debugId} ========== START getAllStudentsCodingProfiles ==========`);
+  
   try {
     const { page = 1, limit = 10, search = '', platform = '', college = '', department = '', batch = '' } = req.query;
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 10;
     const offset = (pageNum - 1) * limitNum;
-
-    let whereClause = 'WHERE u.role = "student"';
-    let params = [];
-
-    if (search && search.trim()) {
-      whereClause += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-
-    if (platform && platform.trim()) {
-      whereClause += ' AND cp.name = ?';
-      params.push(platform);
-    }
-
-    if (college && college.trim() && college !== 'all') {
-      whereClause += ' AND u.college_id = ?';
-      params.push(college);
-    }
-
-    if (department && department.trim() && department !== 'all') {
-      whereClause += ' AND u.department = ?';
-      params.push(department);
-    }
-
-    if (batch && batch.trim() && batch !== 'all') {
-      whereClause += ' AND u.batch = ?';
-      params.push(batch);
-    }
-
-    // Basic query to get only students who have coding profiles
-    const query = `
-      SELECT DISTINCT
-        u.id as student_id,
-        u.name as student_name,
-        u.email as student_email,
-        u.student_id as student_roll_number,
-        u.role as user_role,
-        u.batch,
-        u.college_id,
-        c.name as college_name,
-        u.department
-      FROM users u
-      LEFT JOIN colleges c ON u.college_id = c.id
-      INNER JOIN student_coding_profiles scp ON u.id = scp.student_id
-      LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
-      ${whereClause}
-      ORDER BY u.name
-      LIMIT ? OFFSET ?
-    `;
-
-    // Add pagination parameters
-    params.push(limitNum, offset);
-
-
-    const [students] = await pool.query(query, params);
-
-    // Simplified count query
-    const countQuery = `
-      SELECT COUNT(DISTINCT u.id) as total
-      FROM users u
-      LEFT JOIN colleges c ON u.college_id = c.id
-      INNER JOIN student_coding_profiles scp ON u.id = scp.student_id
-      LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
-      ${whereClause}
-    `;
-
-    // Remove pagination params for count query
-    const countParams = params.slice(0, -2);
-    const [countResult] = await pool.query(countQuery, countParams);
-    const total = countResult[0].total;
-
-    // Optimized: Fetch all coding profiles in a single query instead of N+1 queries
-    const studentIds = students.map(s => s.student_id);
-    let allProfiles = [];
-
-    // Only fetch profiles if there are students
-    if (studentIds.length > 0) {
-      [allProfiles] = await pool.query(`
-        SELECT 
-          scp.student_id,
-          scp.id,
-          scp.username,
-          scp.profile_url,
-          scp.sync_status,
-          scp.last_synced_at,
-          cp.name as platform_name,
-          cp.base_url as platform_url
-        FROM student_coding_profiles scp
-        LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
-        WHERE scp.student_id IN (${studentIds.map(() => '?').join(',')})
-        ORDER BY scp.student_id, cp.name
-      `, studentIds);
-    }
-
-    // Group profiles by student_id
-    const profilesByStudent = {};
-    allProfiles.forEach(profile => {
-      if (!profilesByStudent[profile.student_id]) {
-        profilesByStudent[profile.student_id] = [];
-      }
-      profilesByStudent[profile.student_id].push(profile);
+    
+    console.log(`${debugId} Request parameters:`, {
+      page, limit, search, platform, college, department, batch,
+      pageNum, limitNum, offset
     });
 
-    // Process students with their profiles
-    const processedStudents = students.map(student => {
-      const profiles = profilesByStudent[student.student_id] || [];
+    // PERFORMANCE FIX: Add caching with ETag support for fast 304 responses
+    // CACHE VERSION: v2 - Updated to use new field names (id, name, email, roll_number)
+    const cacheKey = `students_coding_profiles_v2_${page}_${limit}_${search || 'none'}_${platform || 'all'}_${college || 'all'}_${department || 'all'}_${batch || 'all'}`;
+    const etag = `"${crypto.createHash('md5').update(cacheKey).digest('hex').substring(0, 16)}"`;
+    
+    // Early 304 check - before any processing
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (ifNoneMatch === etag) {
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=120');
+      return res.status(304).end();
+    }
+    
+    // Check cache (using new v2 cache key to avoid old cached data)
+    // TEMPORARILY DISABLED CACHE TO DEBUG - Remove this after fixing
+    // const cached = cache.get(cacheKey);
+    // if (cached !== null) {
+    //   res.setHeader('ETag', etag);
+    //   res.setHeader('Cache-Control', 'private, max-age=120');
+    //   return res.json(cached);
+    // }
 
+    // Convert to Supabase queries
+    // Step 1: Get student IDs who have valid profiles for allowed platforms
+    const allowedPlatforms = ['leetcode', 'codechef', 'hackerrank', 'hackerearth', 'geeksforgeeks'];
+    
+    // First, get platform IDs for allowed platforms
+    const { data: platformsData } = await supabase
+      .from('coding_platforms')
+      .select('id, name')
+      .in('name', allowedPlatforms)
+      .eq('is_active', true);
+    
+    if (!platformsData || platformsData.length === 0) {
+      const response = {
+        success: true,
+        data: {
+          students: [],
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total: 0,
+            totalPages: 0
+          }
+        }
+      };
+      cache.set(cacheKey, response);
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=120');
+      return res.json(response);
+    }
+    
+    const platformIds = platformsData.map(p => p.id);
+    
+    // Filter by specific platform if requested
+    if (platform && platform.trim() && platform !== 'all' && allowedPlatforms.includes(platform.toLowerCase())) {
+      const platformData = platformsData.find(p => p.name.toLowerCase() === platform.toLowerCase());
+      if (platformData) {
+        platformIds.length = 0;
+        platformIds.push(platformData.id);
+      }
+    }
+    
+    // Get student IDs with valid profiles
+    // Get all profiles for these platforms (newly added profiles should have username and profile_url)
+    console.log(`${debugId} Fetching profiles for platform IDs:`, platformIds);
+    const { data: allProfilesData, error: allProfilesError } = await supabase
+      .from('student_coding_profiles')
+      .select('student_id, username, profile_url, platform_id')
+      .in('platform_id', platformIds);
+    
+    if (allProfilesError) {
+      console.error(`${debugId} Error fetching all profiles:`, allProfilesError);
+      console.error(`${debugId} Profiles error details:`, JSON.stringify(allProfilesError, null, 2));
+      return res.status(500).json({
+        success: false,
+        message: 'Error fetching coding profiles'
+      });
+    }
+    
+    console.log(`${debugId} Total profiles found:`, allProfilesData?.length || 0);
+    console.log(`${debugId} Platform IDs used:`, platformIds);
+    
+    if (allProfilesData && allProfilesData.length > 0) {
+      console.log(`${debugId} Sample profile data:`, JSON.stringify(allProfilesData.slice(0, 3), null, 2));
+    } else {
+      console.log(`${debugId} WARNING: No profiles found for platform IDs:`, platformIds);
+      // Let's also check if there are ANY profiles at all
+      const { data: allProfilesCheck } = await supabase
+        .from('student_coding_profiles')
+        .select('student_id, platform_id')
+        .limit(5);
+      console.log(`${debugId} Checking if ANY profiles exist in table:`, allProfilesCheck?.length || 0);
+      if (allProfilesCheck && allProfilesCheck.length > 0) {
+        console.log(`${debugId} Sample of all profiles:`, JSON.stringify(allProfilesCheck, null, 2));
+      }
+    }
+    
+    // Extract unique student IDs from all profiles (they should all be valid since we just added them)
+    const studentIdsWithProfiles = [...new Set((allProfilesData || []).map(p => p.student_id).filter(Boolean))];
+    
+    console.log(`${debugId} Found ${studentIdsWithProfiles.length} unique students with profiles`);
+    if (studentIdsWithProfiles.length > 0) {
+      console.log(`${debugId} Sample student IDs:`, studentIdsWithProfiles.slice(0, 5));
+    } else {
+      console.log(`${debugId} ERROR: No student IDs extracted from profiles!`);
+    }
+    
+    if (studentIdsWithProfiles.length === 0) {
+      // No students with profiles, return empty result
+      const response = {
+        success: true,
+        data: {
+          students: [],
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total: 0,
+            totalPages: 0
+          }
+        }
+      };
+      cache.set(cacheKey, response);
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=120');
+      return res.json(response);
+    }
+    
+    // Step 2: Build user query with filters
+    console.log(`${debugId} Querying users with ${studentIdsWithProfiles.length} student IDs`);
+    if (studentIdsWithProfiles.length === 0) {
+      console.log(`${debugId} WARNING: No student IDs to query!`);
+    }
+    
+    let userQuery = supabase
+      .from('users')
+      .select('id, name, email, student_id, role, batch, college_id, department', { count: 'exact' })
+      .eq('role', 'student');
+    
+    // Only add .in() if we have student IDs
+    if (studentIdsWithProfiles.length > 0) {
+      userQuery = userQuery.in('id', studentIdsWithProfiles);
+    } else {
+      // If no student IDs, return empty result
+      const response = {
+        success: true,
+        data: {
+          students: [],
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total: 0,
+            totalPages: 0
+          }
+        }
+      };
+      cache.set(cacheKey, response);
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=120');
+      console.log(`${debugId} Returning empty result - no student IDs with profiles`);
+      return res.json(response);
+    }
+    
+    // Apply search filter
+    if (search && search.trim()) {
+      const searchPattern = `%${search.trim()}%`;
+      userQuery = userQuery.or(`name.ilike.${searchPattern},email.ilike.${searchPattern},student_id.ilike.${searchPattern}`);
+    }
+    
+    // Apply college filter
+    if (college && college.trim() && college !== 'all') {
+      userQuery = userQuery.eq('college_id', college);
+    }
+    
+    // Apply department filter
+    if (department && department.trim() && department !== 'all') {
+      userQuery = userQuery.eq('department', department);
+    }
+    
+    // Apply batch filter
+    if (batch && batch.trim() && batch !== 'all') {
+      userQuery = userQuery.eq('batch', batch);
+    }
+    
+    // Apply pagination
+    userQuery = userQuery
+      .order('name', { ascending: true, nullsFirst: false })
+      .range(offset, offset + limitNum - 1);
+    
+    const { data: studentsData, error: studentsError, count } = await userQuery;
+    
+    if (studentsError) {
+      console.error(`${debugId} Error fetching students:`, studentsError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error fetching students'
+      });
+    }
+    
+    const studentsArray = studentsData || [];
+    const total = count || 0;
+    console.log(`${debugId} Found ${studentsArray.length} students after filters (total: ${total})`);
+    
+    // Extract student IDs for fetching profiles and colleges
+    const studentIds = studentsArray.map(s => s.id).filter(Boolean);
+    
+    // Step 3: Fetch college names and profiles in parallel
+    const collegeIds = [...new Set(studentsArray.map(s => s.college_id).filter(Boolean))];
+    
+    const [collegesData, profilesData] = await Promise.all([
+      // Fetch colleges
+      collegeIds.length > 0 ? supabase
+        .from('colleges')
+        .select('id, name')
+        .in('id', collegeIds) : Promise.resolve({ data: [] }),
+      // Fetch profiles - first get platform IDs for allowed platforms
+      studentIds.length > 0 ? (async () => {
+        // Get platform IDs for allowed platforms
+        const { data: platformsData } = await supabase
+          .from('coding_platforms')
+          .select('id, name, base_url')
+          .in('name', allowedPlatforms)
+          .eq('is_active', true);
+        
+        if (!platformsData || platformsData.length === 0) {
+          return { data: [] };
+        }
+        
+        const platformIds = platformsData.map(p => p.id);
+        const platformMap = new Map(platformsData.map(p => [p.id, p]));
+        
+        // Fetch profiles (removed .or() filter since all profiles should be valid)
+        const { data: profilesData } = await supabase
+          .from('student_coding_profiles')
+          .select('student_id, id, username, profile_url, sync_status, last_synced_at, platform_id')
+          .in('student_id', studentIds)
+          .in('platform_id', platformIds);
+        
+        // Merge platform data
+        return {
+          data: (profilesData || []).map(profile => ({
+            ...profile,
+            coding_platforms: platformMap.get(profile.platform_id)
+          }))
+        };
+      })() : Promise.resolve({ data: [] })
+    ]);
+    
+    // Create college map
+    const collegeMap = new Map((collegesData.data || []).map(c => [c.id, c.name]));
+    
+    // Group profiles by student_id
+    const profilesByStudent = {};
+    (profilesData.data || []).forEach(profile => {
+      const studentId = profile.student_id;
+      if (!profilesByStudent[studentId]) {
+        profilesByStudent[studentId] = [];
+      }
+      profilesByStudent[studentId].push({
+        id: profile.id,
+        username: profile.username,
+        profile_url: profile.profile_url,
+        sync_status: profile.sync_status,
+        last_synced_at: profile.last_synced_at,
+        platform_name: profile.coding_platforms?.name,
+        platform_url: profile.coding_platforms?.base_url
+      });
+    });
+
+    // Step 4: Process students with their profiles
+    const processedStudents = studentsArray.map((student) => {
+      const studentId = student.id;
+      const profiles = profilesByStudent[studentId] || [];
+      
       // Group profiles by platform name
       const platforms = {};
       profiles.forEach(profile => {
-        platforms[profile.platform_name] = {
-          id: profile.id,
-          username: profile.username,
-          profile_url: profile.profile_url,
-          sync_status: profile.sync_status,
-          last_synced_at: profile.last_synced_at,
-          platform_url: profile.platform_url
-        };
+        const platformName = profile.platform_name;
+        if (platformName && allowedPlatforms.includes(platformName.toLowerCase())) {
+          platforms[platformName.toLowerCase()] = {
+            id: profile.id,
+            username: profile.username,
+            profile_url: profile.profile_url,
+            sync_status: profile.sync_status,
+            last_synced_at: profile.last_synced_at,
+            platform_url: profile.platform_url
+          };
+        }
       });
-
+      
+      // Only return students with valid profiles
+      if (Object.keys(platforms).length === 0) {
+        return null;
+      }
+      
       return {
-        ...student,
+        id: student.id,
+        name: student.name,
+        email: student.email,
+        roll_number: student.student_id,
+        role: student.role,
+        batch: student.batch,
+        college_id: student.college_id,
+        college_name: collegeMap.get(student.college_id) || null,
+        department: student.department,
         platforms
       };
-    });
-
-    res.json({
+    }).filter(student => student !== null);
+    
+    // Build response
+    const totalPages = Math.ceil(total / limitNum);
+    
+    const response = {
       success: true,
       data: {
         students: processedStudents,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          pages: Math.ceil(total / limit)
+          page: pageNum,
+          limit: limitNum,
+          total: total,
+          totalPages: totalPages
         }
       }
-    });
+    };
+    
+    // Cache the response
+    cache.set(cacheKey, response);
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', 'private, max-age=120');
+    
+    console.log(`${debugId} Returning ${processedStudents.length} students (total: ${total})`);
+    return res.json(response);
   } catch (error) {
+    console.error(`${debugId} Error in getAllStudentsCodingProfiles:`, error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -349,6 +563,7 @@ export const getStudentCodingProfiles = async (req, res) => {
   try {
     const studentId = req.user.id;
 
+    // OPTIMIZATION: Use direct PostgreSQL connection for JOIN queries (faster than Supabase PostgREST)
     const query = `
       SELECT 
         scp.id,
@@ -362,12 +577,15 @@ export const getStudentCodingProfiles = async (req, res) => {
         cp.display_name as platform_display_name,
         cp.profile_url_pattern
       FROM student_coding_profiles scp
-      JOIN coding_platforms cp ON scp.platform_id = cp.id
+      INNER JOIN coding_platforms cp ON scp.platform_id = cp.id
       WHERE scp.student_id = ?
       ORDER BY cp.display_name
     `;
 
     const [profiles] = await pool.execute(query, [studentId]);
+    
+    // OPTIMIZATION: Add cache headers
+    res.set('Cache-Control', 'private, max-age=60'); // 1 minute cache
 
     // OPTIMIZATION: Fetch all performance data and achievements in single queries to avoid N+1
     const profileIds = profiles.map(p => p.id);
@@ -459,12 +677,13 @@ export const addCodingProfile = async (req, res) => {
 
     // If student_id is provided, validate that the student exists
     if (student_id) {
-      const [studentRows] = await pool.execute(
-        'SELECT id, name FROM users WHERE id = ?',
-        [studentId]
-      );
+      const { data: studentData, error: studentError } = await supabase
+        .from('users')
+        .select('id, name')
+        .eq('id', studentId)
+        .single();
 
-      if (studentRows.length === 0) {
+      if (studentError || !studentData) {
         return res.status(400).json({
           success: false,
           message: 'Invalid student ID'
@@ -473,27 +692,39 @@ export const addCodingProfile = async (req, res) => {
     }
 
     // Check if platform exists
-    const [platformRows] = await pool.execute(
-      'SELECT id FROM coding_platforms WHERE name = ? AND is_active = true',
-      [platform]
-    );
+    const { data: platformData, error: platformError } = await supabase
+      .from('coding_platforms')
+      .select('id, profile_url_pattern')
+      .eq('name', platform)
+      .eq('is_active', true)
+      .single();
 
-    if (platformRows.length === 0) {
+    if (platformError || !platformData) {
       return res.status(400).json({
         success: false,
         message: 'Invalid platform'
       });
     }
 
-    const platformId = platformRows[0].id;
+    const platformId = platformData.id;
 
     // Check if profile already exists
-    const [existingProfile] = await pool.execute(
-      'SELECT id FROM student_coding_profiles WHERE student_id = ? AND platform_id = ?',
-      [studentId, platformId]
-    );
+    const { data: existingProfile, error: existingError } = await supabase
+      .from('student_coding_profiles')
+      .select('id')
+      .eq('student_id', studentId)
+      .eq('platform_id', platformId)
+      .maybeSingle();
 
-    if (existingProfile.length > 0) {
+    if (existingError) {
+      console.error('Error checking existing profile:', existingError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error checking for existing profile'
+      });
+    }
+
+    if (existingProfile) {
       return res.status(400).json({
         success: false,
         message: 'Profile already exists for this platform'
@@ -501,19 +732,31 @@ export const addCodingProfile = async (req, res) => {
     }
 
     // Generate profile URL
-    const [platformInfo] = await pool.execute(
-      'SELECT profile_url_pattern FROM coding_platforms WHERE id = ?',
-      [platformId]
-    );
-
-    const profileUrl = platformInfo[0].profile_url_pattern.replace('{username}', username);
+    const profileUrl = platformData.profile_url_pattern.replace('{username}', username);
 
     // Insert profile
     const profileId = randomUUID();
-    await pool.execute(
-      'INSERT INTO student_coding_profiles (id, student_id, platform_id, username, profile_url, sync_status) VALUES (?, ?, ?, ?, ?, \'pending\')',
-      [profileId, studentId, platformId, username, profileUrl]
-    );
+    const { data: insertedProfile, error: insertError } = await supabase
+      .from('student_coding_profiles')
+      .insert({
+        id: profileId,
+        student_id: studentId,
+        platform_id: platformId,
+        username: username,
+        profile_url: profileUrl,
+        sync_status: 'pending'
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('Error inserting profile:', insertError);
+      return res.status(500).json({
+        success: false,
+        message: 'Error adding coding profile',
+        error: insertError.message
+      });
+    }
 
     res.json({
       success: true,
@@ -526,6 +769,7 @@ export const addCodingProfile = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Error in addCodingProfile:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -637,7 +881,7 @@ export const syncCodingProfile = async (req, res) => {
 
     // Update sync status to syncing
     await pool.execute(
-      'UPDATE student_coding_profiles SET sync_status = "syncing", sync_error = NULL WHERE id = ?',
+      "UPDATE student_coding_profiles SET sync_status = 'syncing', sync_error = NULL WHERE id = ?",
       [profileId]
     );
 
@@ -950,6 +1194,9 @@ export const fetchPlatformStatistics = async (req, res) => {
 
 // Batch fetch platform statistics for multiple students
 export const fetchBatchPlatformStatistics = async (req, res) => {
+  const debugId = `[BATCH-STATS-${Date.now()}]`;
+  console.log(`${debugId} ========== START fetchBatchPlatformStatistics ==========`);
+  
   // Set a longer timeout for this endpoint
   req.setTimeout(300000); // 5 minutes
 
@@ -972,8 +1219,56 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
     const cacheTTL = 60 * 60 * 1000; // 1 hour in milliseconds
     const cacheExpiryTime = new Date(currentTime.getTime() - cacheTTL);
 
+    // CRITICAL FIX: Convert student roll numbers to UUIDs if needed
+    // PostgreSQL uses UUIDs for student_id, but frontend may send roll numbers
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const actualStudentIds = [];
+    const studentIdMap = new Map(); // Map roll numbers to UUIDs for response mapping
+    
+    // Check if we need to convert roll numbers to UUIDs
+    const needsConversion = studentIds.some(id => !uuidPattern.test(id));
+    
+    if (needsConversion) {
+      // Batch lookup all student UUIDs
+      const rollNumberPlaceholders = studentIds.map(() => '?').join(',');
+      const [userLookups] = await pool.execute(
+        `SELECT id, student_id FROM users WHERE student_id IN (${rollNumberPlaceholders}) AND role = 'student'`,
+        studentIds
+      );
+      
+      // Create mapping from roll number to UUID
+      userLookups.forEach(user => {
+        studentIdMap.set(user.student_id, user.id);
+        actualStudentIds.push(user.id);
+      });
+      
+      // If some students weren't found, log warning but continue
+      const foundRollNumbers = new Set(userLookups.map(u => u.student_id));
+      const notFound = studentIds.filter(id => !foundRollNumbers.has(id));
+      if (notFound.length > 0) {
+        console.warn(`Some student roll numbers not found: ${notFound.join(', ')}`);
+      }
+    } else {
+      // All are already UUIDs
+      actualStudentIds.push(...studentIds);
+      studentIds.forEach(id => studentIdMap.set(id, id));
+    }
+
+    // Create reverse map from UUID to original ID for response mapping
+    const uuidToOriginalId = new Map();
+    studentIdMap.forEach((uuid, originalId) => {
+      uuidToOriginalId.set(uuid, originalId);
+    });
+
+    if (actualStudentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid student IDs found'
+      });
+    }
+
     // OPTIMIZATION: Fetch all profiles for all students in a single query to avoid N+1
-    const placeholders = studentIds.map(() => '?').join(',');
+    const placeholders = actualStudentIds.map(() => '?').join(',');
     const [allProfiles] = await pool.execute(`
       SELECT
         scp.student_id,
@@ -983,7 +1278,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
       LEFT JOIN coding_platforms cp ON scp.platform_id = cp.id
       WHERE scp.student_id IN (${placeholders})
       ORDER BY scp.student_id, cp.name
-    `, studentIds);
+    `, actualStudentIds);
 
     // Group profiles by student_id
     const profilesByStudent = {};
@@ -995,47 +1290,126 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
     });
 
     // OPTIMIZATION: Fetch all cached statistics in a single query
-    const [allCachedStats] = await pool.execute(`
-      SELECT 
-        student_id,
-        platform_name,
-        username,
-        statistics_data,
-        last_fetched_at
-      FROM platform_statistics_cache
-      WHERE student_id IN (${placeholders}) AND last_fetched_at > ?
-      ORDER BY student_id, platform_name
-    `, [...studentIds, cacheExpiryTime]);
-
-    // Group cached stats by student_id and platform_name
-    const cachedStatsByStudent = {};
-    allCachedStats.forEach(stat => {
-      if (!cachedStatsByStudent[stat.student_id]) {
-        cachedStatsByStudent[stat.student_id] = new Map();
+    // Use actualStudentIds (UUIDs) for the query
+    // CRITICAL FIX: Format date properly for PostgreSQL timestamp comparison
+    // Ensure all student IDs are valid UUIDs and filter out any invalid ones
+    const validStudentIds = actualStudentIds.filter(id => {
+      const isValid = typeof id === 'string' && id.length > 0 && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+      if (!isValid) {
+        console.warn('[CodingProfiles] Invalid student ID found (not a valid UUID):', id, typeof id);
       }
-      let statisticsData;
-      if (typeof stat.statistics_data === 'string') {
-        statisticsData = JSON.parse(stat.statistics_data);
-      } else {
-        statisticsData = stat.statistics_data;
-      }
-      cachedStatsByStudent[stat.student_id].set(stat.platform_name, {
-        ...statisticsData,
-        username: stat.username,
-        lastFetched: stat.last_fetched_at,
-        cached: true
-      });
+      return isValid;
     });
+    
+    let cachedStatsByStudent = {};
+    
+    if (validStudentIds.length === 0) {
+      console.warn('[CodingProfiles] No valid student IDs to fetch cached stats for');
+    } else {
+      // CRITICAL FIX: Use PostgreSQL-style placeholders ($1, $2, ...) to avoid parameter order issues
+      // Build placeholders: $1, $2, ..., $N for student IDs, then $N+1 for timestamp
+      const studentIdPlaceholders = validStudentIds.map((_, idx) => `$${idx + 1}`).join(',');
+      const timestampPlaceholder = `$${validStudentIds.length + 1}`;
+      
+      // CRITICAL FIX: Ensure timestamp is properly formatted as ISO string
+      const cacheExpiryTimeStr = cacheExpiryTime.toISOString();
+      
+      // CRITICAL FIX: Build parameters array carefully - student IDs first, then timestamp
+      // IMPORTANT: The query uses student_id IN (...) AND last_fetched_at > ?
+      // So parameters must be: [studentId1, studentId2, ..., timestamp]
+      const queryParams = [...validStudentIds, cacheExpiryTimeStr];
+      
+      console.log(`${debugId} Fetching cached stats:`, {
+        studentCount: validStudentIds.length,
+        cacheExpiryTime: cacheExpiryTimeStr,
+        paramCount: queryParams.length,
+        expectedParams: validStudentIds.length + 1,
+        sampleStudentId: validStudentIds[0],
+        lastParam: queryParams[queryParams.length - 1],
+        lastParamType: typeof queryParams[queryParams.length - 1],
+        isTimestamp: queryParams[queryParams.length - 1] instanceof Date || /^\d{4}-\d{2}-\d{2}T/.test(queryParams[queryParams.length - 1] || ''),
+        studentIdPlaceholders,
+        timestampPlaceholder
+      });
+      
+      try {
+        // CRITICAL FIX: Use simpler query to avoid parameter binding issues
+        // Query all recent cached stats, then filter by student IDs in JavaScript
+        // This avoids the complex IN clause with many parameters
+        // Note: cacheExpiryTimeStr is already defined above (line 1701)
+        
+        console.log(`${debugId} Fetching cached stats (simplified):`, {
+          studentCount: validStudentIds.length,
+          cacheExpiryTime: cacheExpiryTimeStr
+        });
+        
+        // Query all recent stats (single parameter - timestamp)
+        const [allCachedStatsRaw] = await pool.execute(`
+          SELECT 
+            student_id,
+            platform_name,
+            username,
+            statistics_data,
+            last_fetched_at
+          FROM platform_statistics_cache
+          WHERE last_fetched_at > ?
+          ORDER BY student_id, platform_name
+        `, [cacheExpiryTimeStr]);
+        
+        // Filter by student IDs in JavaScript (avoids complex SQL parameter binding)
+        const studentIdSet = new Set(validStudentIds);
+        const allCachedStats = (allCachedStatsRaw || []).filter(stat => 
+          stat.student_id && studentIdSet.has(stat.student_id)
+        );
+        
+        console.log(`${debugId} Cached stats filtered:`, {
+          totalFromDB: (allCachedStatsRaw || []).length,
+          afterFilter: allCachedStats.length,
+          studentIdsSearched: validStudentIds.length
+        });
+
+        // Group cached stats by student_id and platform_name
+        allCachedStats.forEach(stat => {
+          if (!cachedStatsByStudent[stat.student_id]) {
+            cachedStatsByStudent[stat.student_id] = new Map();
+          }
+          let statisticsData;
+          if (typeof stat.statistics_data === 'string') {
+            statisticsData = JSON.parse(stat.statistics_data);
+          } else {
+            statisticsData = stat.statistics_data;
+          }
+          cachedStatsByStudent[stat.student_id].set(stat.platform_name, {
+            ...statisticsData,
+            username: stat.username,
+            lastFetched: stat.last_fetched_at,
+            cached: true
+          });
+        });
+      } catch (cacheError) {
+        console.error(`${debugId} Error fetching cached stats:`, cacheError);
+        console.error(`${debugId} Error details:`, {
+          message: cacheError.message,
+          stack: cacheError.stack,
+          studentIdsCount: validStudentIds ? validStudentIds.length : 0,
+          cacheExpiryTime: cacheExpiryTimeStr || 'not defined'
+        });
+        // Continue with empty cache if there's an error
+        cachedStatsByStudent = {};
+      }
+    }
 
     // Process students in smaller batches to prevent server overload
+    // Note: studentBatch contains UUIDs, but we need to return results with original IDs
     const processStudentBatch = async (studentBatch) => {
-      return Promise.all(studentBatch.map(async (studentId) => {
+      return Promise.all(studentBatch.map(async (studentUuid) => {
+        const originalStudentId = uuidToOriginalId.get(studentUuid) || studentUuid;
         try {
-          // Get student's coding profiles from pre-fetched data
-          const profiles = profilesByStudent[studentId] || [];
+          // Get student's coding profiles from pre-fetched data (use UUID)
+          const profiles = profilesByStudent[studentUuid] || [];
 
           if (profiles.length === 0) {
-            return { studentId, platformStatistics: null };
+            return { studentId: originalStudentId, platformStatistics: null };
           }
 
           // Check cache first (unless forceRefresh is true)
@@ -1044,8 +1418,8 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
           const platformsToScrape = {};
 
           if (!forceRefresh) {
-            // Get cached statistics from pre-fetched data
-            const cachedPlatforms = cachedStatsByStudent[studentId] || new Map();
+            // Get cached statistics from pre-fetched data (use UUID)
+            const cachedPlatforms = cachedStatsByStudent[studentUuid] || new Map();
 
             // Check which platforms need scraping
             profiles.forEach(profile => {
@@ -1112,8 +1486,8 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                     ON CONFLICT (student_id, platform_name) DO UPDATE SET
                       statistics_data = EXCLUDED.statistics_data,
                       last_fetched_at = EXCLUDED.last_fetched_at,
-                      updated_at = CURRENT_TIMESTAMP
-                  `, [studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
+                      updated_at = NOW()
+                  `, [studentUuid, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
 
                   // Also save to batch cache
@@ -1121,7 +1495,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                     pool.execute(`
                     INSERT INTO batch_platform_statistics_cache (id, batch_id, student_id, platform_name, username, statistics_data, last_fetched_at)
                     VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
-                  `, [batchId, studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
+                  `, [batchId, studentUuid, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
                 }
               }
@@ -1129,7 +1503,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
 
             // Execute all database writes in parallel
             await Promise.all(dbPromises).catch(dbError => {
-              console.error(`Error saving platform statistics for student ${studentId}:`, dbError);
+              console.error(`Error saving platform statistics for student ${originalStudentId}:`, dbError);
               // Continue even if some saves fail
             });
           } else {
@@ -1143,7 +1517,7 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
                     pool.execute(`
                     INSERT INTO batch_platform_statistics_cache (id, batch_id, student_id, platform_name, username, statistics_data, last_fetched_at)
                     VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, ?)
-                  `, [batchId, studentId, platformName, profile.username, JSON.stringify(stats), currentTime])
+                  `, [batchId, studentUuid, platformName, profile.username, JSON.stringify(stats), currentTime])
                   );
                 }
               }
@@ -1153,19 +1527,22 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
             });
           }
 
-          return { studentId, platformStatistics: platformStats };
+          // Return with original student ID for frontend compatibility
+          return { studentId: originalStudentId, platformStatistics: platformStats };
         } catch (error) {
-          console.error(`Error processing student ${studentId}:`, error);
-          return { studentId, platformStatistics: null, error: error.message };
+          console.error(`Error processing student ${originalStudentId}:`, error);
+          return { studentId: originalStudentId, platformStatistics: null, error: error.message };
         }
       }));
     };
 
     // Process students in batches to prevent server overload
+    // Use actualStudentIds (UUIDs) for processing, but map results back to original IDs
     const allResults = [];
-    for (let i = 0; i < studentIds.length; i += MAX_BATCH_SIZE) {
-      const batch = studentIds.slice(i, i + MAX_BATCH_SIZE);
-      console.log(`Processing batch ${Math.floor(i / MAX_BATCH_SIZE) + 1} of ${Math.ceil(studentIds.length / MAX_BATCH_SIZE)} (${batch.length} students)`);
+    for (let i = 0; i < actualStudentIds.length; i += MAX_BATCH_SIZE) {
+      const batch = actualStudentIds.slice(i, i + MAX_BATCH_SIZE);
+      const originalBatch = batch.map(uuid => uuidToOriginalId.get(uuid) || uuid);
+      console.log(`Processing batch ${Math.floor(i / MAX_BATCH_SIZE) + 1} of ${Math.ceil(actualStudentIds.length / MAX_BATCH_SIZE)} (${batch.length} students)`);
 
       try {
         const batchResults = await processStudentBatch(batch);
@@ -1173,14 +1550,14 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
 
         // OPTIMIZATION: Reduced delay between batches from 1000ms to 100ms for better throughput
         // Only add delay if there are more batches to process
-        if (i + MAX_BATCH_SIZE < studentIds.length) {
+        if (i + MAX_BATCH_SIZE < actualStudentIds.length) {
           await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between batches
         }
       } catch (batchError) {
         console.error(`Error processing batch starting at index ${i}:`, batchError);
-        // Add error results for this batch
-        batch.forEach(studentId => {
-          allResults.push({ studentId, platformStatistics: null, error: batchError.message });
+        // Add error results for this batch using original IDs
+        originalBatch.forEach(originalId => {
+          allResults.push({ studentId: originalId, platformStatistics: null, error: batchError.message });
         });
       }
     }
@@ -1207,7 +1584,8 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
       });
     }
   } catch (error) {
-    console.error('Error in fetchBatchPlatformStatistics:', error);
+    console.error(`${debugId} Error in fetchBatchPlatformStatistics:`, error);
+    console.error(`${debugId} Error stack:`, error.stack);
     // CRITICAL FIX: Ensure error response is sent
     if (!res.headersSent) {
       res.status(500).json({
@@ -1216,6 +1594,8 @@ export const fetchBatchPlatformStatistics = async (req, res) => {
         error: error.message
       });
     }
+  } finally {
+    console.log(`${debugId} ========== END fetchBatchPlatformStatistics ==========`);
   }
 };
 
@@ -1224,7 +1604,55 @@ export const getCachedPlatformStatistics = async (req, res) => {
   try {
     const { studentId } = req.params;
 
-    // Get cached platform statistics
+    // CRITICAL FIX: Handle both UUID and student roll number
+    // PostgreSQL student_id is UUID, but we might receive roll numbers from frontend
+    let actualStudentId = studentId;
+    
+    // Check if studentId is a UUID format (contains hyphens and is 36 chars) or a roll number
+    const studentIdIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(studentId);
+
+    if (!studentIdIsUUID) {
+      // OPTIMIZATION: Check cache first to avoid database lookup
+      const cachedUuid = studentIdCache.get(studentId);
+      if (cachedUuid) {
+        actualStudentId = cachedUuid;
+      } else {
+        // It's a roll number, look up the actual UUID from users table
+        try {
+          const [users] = await pool.execute(
+            "SELECT id FROM users WHERE student_id = ? AND role = 'student' LIMIT 1",
+            [studentId]
+          );
+          if (users.length === 0) {
+            // Set cache for not found to avoid repeated queries
+            studentIdCache.set(studentId, null);
+            return res.status(404).json({
+              success: false,
+              message: 'Student not found',
+              data: {
+                studentId,
+                platformStatistics: {},
+                lastUpdated: null,
+                cached: false
+              }
+            });
+          }
+          actualStudentId = users[0].id;
+          // Cache the mapping for future requests
+          studentIdCache.set(studentId, actualStudentId);
+        } catch (lookupError) {
+          console.error('Error looking up student UUID:', lookupError);
+          return res.status(500).json({
+            success: false,
+            message: 'Error looking up student',
+            error: lookupError.message
+          });
+        }
+      }
+    }
+
+    // OPTIMIZATION: Use direct PostgreSQL connection for faster queries
+    // Get cached platform statistics using the actual UUID
     const [cachedStats] = await pool.execute(`
       SELECT 
         platform_name,
@@ -1236,7 +1664,7 @@ export const getCachedPlatformStatistics = async (req, res) => {
       FROM platform_statistics_cache
       WHERE student_id = ?
       ORDER BY last_fetched_at DESC
-    `, [studentId]);
+    `, [actualStudentId]);
 
     if (cachedStats.length === 0) {
       // Return 200 with empty data instead of 404 - no cached data is a valid state
@@ -1269,6 +1697,12 @@ export const getCachedPlatformStatistics = async (req, res) => {
         lastFetched: stat.last_fetched_at,
         cached: true
       };
+    });
+
+    // OPTIMIZATION: Add cache headers for client-side caching (5 minutes)
+    res.set({
+      'Cache-Control': 'private, max-age=300', // 5 minutes
+      'ETag': `"${actualStudentId}-${cachedStats[0]?.last_fetched_at || 'empty'}"`
     });
 
     res.json({

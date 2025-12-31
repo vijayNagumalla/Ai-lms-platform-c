@@ -1,9 +1,42 @@
 .vercel
 node_modules
 
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.env
+backend/.env
+backend/.env.*
+api/.env
+
 # Exclude SQL files
 *.sql
 **/*.sql
+
+# Log files
+*.log
+logs/
+backend/logs/
+**/logs/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
 
 # Exclude unwanted documentation/setup files
 ADD_SUPABASE_DB_URL.md

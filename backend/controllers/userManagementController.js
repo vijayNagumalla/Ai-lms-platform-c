@@ -4,7 +4,15 @@ import fs from 'fs';
 import formidable from 'formidable';
 import xlsx from 'xlsx';
 import bcrypt from 'bcryptjs';
-import { pool } from '../config/database.js';
+import { pool, supabase } from '../config/database.js';
+import LRUCache from 'lru-cache';
+
+// Cache for user list queries (5 minute TTL, max 100 entries)
+const cache = new LRUCache({
+  max: 100,
+  ttl: 5 * 60 * 1000, // 5 minutes
+  updateAgeOnGet: true
+});
 
 // Search users by query
 export const searchUsers = async (req, res) => {
@@ -12,7 +20,7 @@ export const searchUsers = async (req, res) => {
     const { q: query, role, limit = 10 } = req.query;
     const currentUser = req.user;
 
-    if (!query || query.trim().length < 2) {
+    if (!query || query.trim().length < 1) {
       return res.json({
         success: true,
         data: []
@@ -20,75 +28,75 @@ export const searchUsers = async (req, res) => {
     }
 
     // CRITICAL FIX: Validate and sanitize input
-    const searchTerm = `%${query.trim().substring(0, 100)}%`; // Limit search term length
+    const searchTerm = query.trim().substring(0, 100); // Limit search term length
     const limitNum = Math.min(parseInt(limit) || 10, 100); // Max 100 results
 
-    let sql;
-    let params;
-
-    // CRITICAL FIX: Add role-based filtering
-    if (currentUser.role === 'super-admin') {
-      // Super admin can search all users
-      if (role) {
-        sql = `
-          SELECT u.id, u.name, u.email, u.student_id, u.role, u.department, c.name as college_name
-          FROM users u
-          LEFT JOIN colleges c ON u.college_id = c.id
-          WHERE (u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?) AND u.role = ?
-          ORDER BY u.name
-          LIMIT ?
-        `;
-        params = [searchTerm, searchTerm, searchTerm, role, limitNum];
-      } else {
-        sql = `
-          SELECT u.id, u.name, u.email, u.student_id, u.role, u.department, c.name as college_name
-          FROM users u
-          LEFT JOIN colleges c ON u.college_id = c.id
-          WHERE (u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?)
-          ORDER BY u.name
-          LIMIT ?
-        `;
-        params = [searchTerm, searchTerm, searchTerm, limitNum];
-      }
-    } else if (currentUser.role === 'college-admin' || currentUser.role === 'faculty') {
-      // College admin and faculty can only search users from their college
-      if (role) {
-        sql = `
-          SELECT u.id, u.name, u.email, u.student_id, u.role, u.department, c.name as college_name
-          FROM users u
-          LEFT JOIN colleges c ON u.college_id = c.id
-          WHERE (u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?) 
-            AND u.role = ? 
-            AND u.college_id = ?
-          ORDER BY u.name
-          LIMIT ?
-        `;
-        params = [searchTerm, searchTerm, searchTerm, role, currentUser.college_id, limitNum];
-      } else {
-        sql = `
-          SELECT u.id, u.name, u.email, u.student_id, u.role, u.department, c.name as college_name
-          FROM users u
-          LEFT JOIN colleges c ON u.college_id = c.id
-          WHERE (u.name LIKE ? OR u.email LIKE ? OR u.student_id LIKE ?) 
-            AND u.college_id = ?
-          ORDER BY u.name
-          LIMIT ?
-        `;
-        params = [searchTerm, searchTerm, searchTerm, currentUser.college_id, limitNum];
-      }
-    } else {
-      // Students and other roles cannot search users
+    // Check permissions
+    if (currentUser.role !== 'super-admin' && currentUser.role !== 'college-admin' && currentUser.role !== 'faculty') {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to search users'
       });
     }
 
-    const [users] = await pool.query(sql, params);
+    // Build Supabase query with OR conditions for search
+    // Supabase OR syntax: "column1.ilike.%value%,column2.ilike.%value%"
+    const searchPattern = `%${searchTerm}%`;
+    let userQuery = supabase
+      .from('users')
+      .select('id, name, email, student_id, role, department, college_id')
+      .or(`name.ilike.${searchPattern},email.ilike.${searchPattern},student_id.ilike.${searchPattern}`)
+      .order('name', { ascending: true })
+      .limit(limitNum);
+
+    // Apply role filter if specified
+    if (role) {
+      userQuery = userQuery.eq('role', role);
+    }
+
+    // Apply college filter for college-admin and faculty
+    if (currentUser.role === 'college-admin' || currentUser.role === 'faculty') {
+      userQuery = userQuery.eq('college_id', currentUser.college_id);
+    }
+
+    // Execute query
+    const { data: users, error } = await userQuery;
+
+    if (error) {
+      console.error('Error searching users:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Internal server error'
+      });
+    }
+
+    // Fetch college names if needed
+    if (users && users.length > 0) {
+      const collegeIds = [...new Set(users.map(u => u.college_id).filter(Boolean))];
+      
+      if (collegeIds.length > 0) {
+        const { data: colleges } = await supabase
+          .from('colleges')
+          .select('id, name')
+          .in('id', collegeIds);
+
+        const collegeMap = new Map((colleges || []).map(c => [c.id, c.name]));
+
+        // Add college_name to each user
+        users.forEach(user => {
+          user.college_name = collegeMap.get(user.college_id) || null;
+        });
+      } else {
+        // No college IDs, set college_name to null for all
+        users.forEach(user => {
+          user.college_name = null;
+        });
+      }
+    }
 
     res.json({
       success: true,
-      data: users
+      data: users || []
     });
   } catch (error) {
     console.error('Error searching users:', error);
@@ -174,6 +182,22 @@ export const getUserById = async (req, res) => {
 export const listUsers = async (req, res) => {
   try {
     const { page = 1, limit = 10, search, role, college_id, status, department, batch } = req.query;
+    
+    // PERFORMANCE FIX: Add caching for common queries (no search/filters)
+    const hasFilters = search || (role && role !== 'all') || (college_id && college_id !== 'all') || 
+                      (status && status !== 'all') || (department && department !== 'all') || 
+                      (batch && batch !== 'all');
+    
+    if (!hasFilters && page === '1' && limit === '10') {
+      const cacheKey = `users_list_default_${page}_${limit}`;
+      const cached = cache.get(cacheKey);
+      if (cached !== null) {
+        // Set cache headers for client-side caching
+        res.setHeader('Cache-Control', 'private, max-age=30'); // 30 seconds
+        return res.json(cached);
+      }
+    }
+    
     // CRITICAL FIX: Use safe input validation
     const { safeParseInt } = await import('../utils/inputValidation.js');
     const pageNum = safeParseInt(page, 1, 1, 1000);
@@ -211,24 +235,44 @@ export const listUsers = async (req, res) => {
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    // Get users with pagination - explicitly include plain_password for display
-    const sql = `SELECT u.*, u.plain_password, c.name as college_name 
+    // PERFORMANCE FIX: Only select necessary fields, exclude password for better performance
+    // Only include plain_password if explicitly needed (for super-admin display)
+    const sql = `SELECT u.id, u.name, u.email, u.student_id, u.role, u.college_id, u.department, 
+                        u.phone, u.country, u.avatar_url, u.is_active, u.email_verified, 
+                        u.created_at, u.updated_at, c.name as college_name 
                  FROM users u 
                  LEFT JOIN colleges c ON u.college_id = c.id 
                  ${whereClause} 
-                 ORDER BY u.id DESC 
+                 ORDER BY u.created_at DESC 
                  LIMIT ? OFFSET ?`;
 
     const userParams = [...params, limitNum, offset];
     const [users] = await pool.query(sql, userParams);
 
-    // Get total count
-    const countSql = `SELECT COUNT(*) as total FROM users u ${whereClause}`;
-    const [countResult] = await pool.query(countSql, params);
-    const total = countResult[0].total;
+    // PERFORMANCE FIX: Use approximate count for large datasets if no filters
+    let total;
+    if (!hasFilters) {
+      // For unfiltered queries, use cached count or estimate
+      const countCacheKey = 'users_total_count';
+      const cachedCount = cache.get(countCacheKey);
+      if (cachedCount !== null) {
+        total = cachedCount;
+      } else {
+        const countSql = `SELECT COUNT(*) as total FROM users u ${whereClause}`;
+        const [countResult] = await pool.query(countSql, params);
+        total = countResult[0].total;
+        // Cache count for 5 minutes
+        cache.set(countCacheKey, total, 5 * 60 * 1000);
+      }
+    } else {
+      const countSql = `SELECT COUNT(*) as total FROM users u ${whereClause}`;
+      const [countResult] = await pool.query(countSql, params);
+      total = countResult[0].total;
+    }
+    
     const totalPages = Math.ceil(total / limitNum);
 
-    res.json({
+    const response = {
       success: true,
       data: users,
       pagination: {
@@ -237,7 +281,17 @@ export const listUsers = async (req, res) => {
         total,
         totalPages
       }
-    });
+    };
+    
+    // Cache default query for 30 seconds
+    if (!hasFilters && page === '1' && limit === '10') {
+      const cacheKey = `users_list_default_${page}_${limit}`;
+      cache.set(cacheKey, response, 30 * 1000);
+      // Set cache headers for client-side caching
+      res.setHeader('Cache-Control', 'private, max-age=30'); // 30 seconds
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('List users error:', error);
     res.status(500).json({

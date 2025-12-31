@@ -1761,20 +1761,20 @@ const CollegeManagementPage = () => {
   const handleEmailShare = (contact) => {
     setActiveContact(contact);
     setShowEmailInput(true);
-    setShowWhatsAppInput(false);
+    setShowWhatsappInput(false);
     setEmailRecipient('');
   };
 
   // Enhanced WhatsApp sharing with inline input
   const handleWhatsAppShare = (contact) => {
     setActiveContact(contact);
-    setShowWhatsAppInput(true);
+    setShowWhatsappInput(true);
     setShowEmailInput(false);
     setWhatsappRecipient('');
   };
 
   // Send email with recipient input
-  const sendEmail = () => {
+  const sendEmail = async () => {
     if (!emailRecipient.trim()) {
       toast({
         title: "Error",
@@ -1795,22 +1795,55 @@ const CollegeManagementPage = () => {
       return;
     }
     
-    const subject = `Contact Information - ${activeContact.name}`;
-    const body = `Hi,\n\nHere's the contact information for ${activeContact.name}:\n\nName: ${activeContact.name}\nPhone: ${activeContact.phone}\nEmail: ${activeContact.email}${activeContact.designation ? `\nDesignation: ${activeContact.designation}` : ''}\n\nBest regards`;
+    if (!activeContact) {
+      toast({
+        title: "Error",
+        description: "Contact information is missing",
+        variant: "destructive"
+      });
+      return;
+    }
     
-    // Open email client with recipient pre-filled
-    const mailtoLink = `mailto:${emailRecipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    window.open(mailtoLink);
-    
-    // Reset and hide input
-    setEmailRecipient('');
-    setShowEmailInput(false);
-    
-    toast({
-      title: "Email Opened",
-      description: `Email client opened with ${emailRecipient} as recipient`,
-      variant: "default"
-    });
+    try {
+      // Show loading state
+      toast({
+        title: "Sending...",
+        description: "Sending email via SMTP service",
+      });
+      
+      // Call API to send email via SMTP
+      const response = await apiService.post('/email/send-contact', {
+        recipientEmail: emailRecipient.trim(),
+        contactInfo: {
+          name: activeContact.name,
+          phone: activeContact.phone || null,
+          email: activeContact.email || null,
+          designation: activeContact.designation || null
+        }
+      });
+      
+      if (response.success) {
+        toast({
+          title: "Email Sent!",
+          description: `Contact information sent to ${emailRecipient}`,
+          variant: "default"
+        });
+        
+            // Reset and hide input
+        setEmailRecipient('');
+        setShowEmailInput(false);
+        setActiveContact(null);
+      } else {
+        throw new Error(response.message || 'Failed to send email');
+      }
+    } catch (error) {
+      console.error('Error sending email:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Failed to send email. Please check your SMTP configuration.",
+        variant: "destructive"
+      });
+    }
   };
 
   // Send WhatsApp with recipient input
@@ -1844,7 +1877,7 @@ const CollegeManagementPage = () => {
     
     // Reset and hide input
     setWhatsappRecipient('');
-    setShowWhatsAppInput(false);
+    setShowWhatsappInput(false);
     
     toast({
       title: "WhatsApp Opened",
@@ -1856,7 +1889,7 @@ const CollegeManagementPage = () => {
   // Close sharing inputs
   const closeSharingInputs = () => {
     setShowEmailInput(false);
-    setShowWhatsAppInput(false);
+    setShowWhatsappInput(false);
     setEmailRecipient('');
     setWhatsappRecipient('');
     setActiveContact(null);

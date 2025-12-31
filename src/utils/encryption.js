@@ -55,11 +55,20 @@ class EncryptionService {
       ? JSON.parse(localStorage.getItem('lmsUser'))?.id 
       : 'default';
     
-    // MEDIUM FIX: Currently using hardcoded secret (INSECURE for production)
-    // In production, fetch encryption key from server per session
-    // Example: const secret = await fetch('/api/encryption/key').then(r => r.json()).key;
-    const secret = 'lms-platform-secret-key'; // ⚠️ SECURITY WARNING: Replace with server-side key generation
-    return `${userId}-${secret}`;
+    // SECURITY FIX: Use environment variable or generate from user session
+    // In production, this should be fetched from server per session
+    // For now, derive from user ID and a session-based secret
+    const sessionSecret = sessionStorage.getItem('lms_encryption_secret') || 
+                         localStorage.getItem('lms_encryption_secret') ||
+                         crypto.getRandomValues(new Uint8Array(32)).join('');
+    
+    // Store session secret if not present
+    if (!sessionStorage.getItem('lms_encryption_secret') && !localStorage.getItem('lms_encryption_secret')) {
+      sessionStorage.setItem('lms_encryption_secret', sessionSecret);
+    }
+    
+    // Combine user ID with session secret for unique key per user session
+    return `${userId}-${sessionSecret}`;
   }
 
   // Encrypt data

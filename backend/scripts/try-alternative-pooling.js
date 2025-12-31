@@ -13,31 +13,40 @@ const __dirname = dirname(__filename);
 
 dotenv.config({ path: join(__dirname, '..', '.env') });
 
-const password = 'Vijay%402607%40';
-const projectRef = 'zhacsxhsjgfnniefmadh';
-const region = 'ap-south-1';
+// SECURITY FIX: Read from environment variables
+const password = process.env.SUPABASE_DB_PASSWORD;
+const projectRef = process.env.SUPABASE_PROJECT_REF || 'zhacsxhsjgfnniefmadh';
+const region = process.env.SUPABASE_REGION || 'ap-south-1';
+
+if (!password) {
+  console.error('❌ ERROR: SUPABASE_DB_PASSWORD environment variable is required');
+  console.error('   Set it in your backend/.env file');
+  process.exit(1);
+}
+
+const encodedPassword = encodeURIComponent(password);
 
 // Try different connection pooling formats
 const formats = [
   {
     name: 'Format 1: postgres.[project-ref] with aws-0',
-    url: `postgresql://postgres.${projectRef}:${password}@aws-0-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres.${projectRef}:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Format 2: postgres.[project-ref] with aws-1',
-    url: `postgresql://postgres.${projectRef}:${password}@aws-1-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres.${projectRef}:${encodedPassword}@aws-1-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Format 3: Just postgres username with aws-0',
-    url: `postgresql://postgres:${password}@aws-0-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Format 4: Just postgres username with aws-1',
-    url: `postgresql://postgres:${password}@aws-1-${region}.pooler.supabase.com:6543/postgres`
+    url: `postgresql://postgres:${encodedPassword}@aws-1-${region}.pooler.supabase.com:6543/postgres`
   },
   {
     name: 'Format 5: postgres.[project-ref] with transaction mode',
-    url: `postgresql://postgres.${projectRef}:${password}@aws-0-${region}.pooler.supabase.com:6543/postgres?pgbouncer=true`
+    url: `postgresql://postgres.${projectRef}:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres?pgbouncer=true`
   }
 ];
 
@@ -94,7 +103,7 @@ async function main() {
   console.log('   1. Go to Supabase Dashboard → Settings → Database');
   console.log('   2. Find "Connection pooling" section');
   console.log('   3. Copy the EXACT connection string shown');
-  console.log('   4. Replace [YOUR-PASSWORD] with: Vijay%402607%40');
+  console.log('   4. Replace [YOUR-PASSWORD] with your URL-encoded password');
   console.log('   5. Update your .env file\n');
   console.log('💡 The format might be different than standard formats.\n');
 }

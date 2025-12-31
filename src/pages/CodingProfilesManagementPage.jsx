@@ -77,6 +77,7 @@ const CodingProfilesManagementPage = () => {
   const [exportLoading, setExportLoading] = useState(false); // Export loading state
   const { toast } = useToast();
 
+  // Only these 5 platforms are allowed - this is enforced by default in the backend
   const platformsData = [
     { name: 'leetcode', displayName: 'LeetCode', color: 'bg-orange-100 text-orange-800' },
     { name: 'codechef', displayName: 'CodeChef', color: 'bg-red-100 text-red-800' },
@@ -104,8 +105,16 @@ const CodingProfilesManagementPage = () => {
     try {
       setAutoLoading(true);
       
-      // Get all student IDs
-      const studentIds = students.map(s => s.student_id);
+      // Get all student IDs - filter out undefined/null IDs
+      const studentIds = students
+        .map(s => s.id)
+        .filter(id => id != null && id !== undefined && id !== 'undefined');
+      
+      if (studentIds.length === 0) {
+        console.log('No valid student IDs found for loading cached stats');
+        setAutoLoading(false);
+        return;
+      }
       
       // Load cached data for each student
       const cachedDataPromises = studentIds.map(async (studentId) => {
@@ -184,6 +193,9 @@ const CodingProfilesManagementPage = () => {
   }, [searchTerm]);
 
   const fetchStudents = async () => {
+    const debugId = `[FRONTEND-DEBUG-${Date.now()}]`;
+    console.log(`${debugId} ========== FRONTEND: fetchStudents START ==========`);
+    
     try {
       setLoading(true);
       const platformParam = selectedPlatform === 'all' ? '' : selectedPlatform;
@@ -200,14 +212,102 @@ const CodingProfilesManagementPage = () => {
       if (selectedDepartment && selectedDepartment !== 'all') params.append('department', selectedDepartment);
       if (selectedBatch && selectedBatch !== 'all') params.append('batch', selectedBatch);
       
-      const response = await apiService.get(`/coding-profiles/students?${params.toString()}`);
+      const apiUrl = `/coding-profiles/students?${params.toString()}`;
+      console.log(`${debugId} API Request URL:`, apiUrl);
+      console.log(`${debugId} Request parameters:`, {
+        searchTerm,
+        selectedPlatform,
+        selectedCollege,
+        selectedDepartment,
+        selectedBatch
+      });
+      
+      const requestStartTime = Date.now();
+      const response = await apiService.get(apiUrl);
+      const requestEndTime = Date.now();
+      
+      console.log(`${debugId} API Response received in ${requestEndTime - requestStartTime}ms`);
+      console.log(`${debugId} Response structure:`, {
+        success: response.success,
+        hasData: !!response.data,
+        studentsCount: response.data?.students?.length || 0,
+        pagination: response.data?.pagination
+      });
       
       if (response.success) {
-        setStudents(response.data.students);
+        const studentsData = response.data.students || [];
+        console.log(`${debugId} Received ${studentsData.length} students`);
+        
+        // Detailed logging for first 3 students
+        studentsData.slice(0, 3).forEach((student, idx) => {
+          console.log(`${debugId} Student ${idx} received from API:`, {
+            id: student.id,
+            name: student.name,
+            email: student.email,
+            roll_number: student.roll_number,
+            batch: student.batch,
+            college_name: student.college_name,
+            department: student.department,
+            platforms: Object.keys(student.platforms || {}),
+            fullObject: JSON.stringify(student, null, 2)
+          });
+          
+          // Check for missing fields
+          const missingFields = [];
+          if (!student.id || student.id === undefined || student.id === 'undefined') missingFields.push('id');
+          if (!student.name || student.name === '') missingFields.push('name');
+          if (!student.email || student.email === '') missingFields.push('email');
+          if (!student.roll_number || student.roll_number === '') missingFields.push('roll_number');
+          if (!student.batch || student.batch === '') missingFields.push('batch');
+          
+          if (missingFields.length > 0) {
+            console.warn(`${debugId} ⚠️ Student ${idx} missing fields:`, missingFields);
+          }
+        });
+        
+        // Check overall data quality
+        const studentsWithMissingData = studentsData.filter(s => 
+          !s.id || s.id === undefined || s.id === 'undefined' || !s.name || !s.email || !s.roll_number || !s.batch
+        );
+        
+        if (studentsWithMissingData.length > 0) {
+          console.warn(`${debugId} ⚠️ ${studentsWithMissingData.length} students have missing data`);
+          console.warn(`${debugId} Missing data breakdown:`, {
+            missingId: studentsData.filter(s => !s.id || s.id === undefined || s.id === 'undefined').length,
+            missingName: studentsData.filter(s => !s.name || s.name === '').length,
+            missingEmail: studentsData.filter(s => !s.email || s.email === '').length,
+            missingRollNumber: studentsData.filter(s => !s.roll_number || s.roll_number === '').length,
+            missingBatch: studentsData.filter(s => !s.batch || s.batch === '').length
+          });
+        }
+        
+        // Validate that students have required fields (id, name, email, roll_number)
+        const validStudents = studentsData.filter(s => {
+          const hasValidId = s.id != null && s.id !== undefined && s.id !== 'undefined';
+          if (!hasValidId) {
+            console.warn(`${debugId} ⚠️ Student missing valid id:`, s);
+          }
+          return hasValidId;
+        });
+        
+        if (validStudents.length !== studentsData.length) {
+          console.warn(`${debugId} ⚠️ Filtered out ${studentsData.length - validStudents.length} students with invalid IDs`);
+        }
+        
+        setStudents(validStudents);
+        console.log(`${debugId} Students state updated with ${validStudents.length} valid students`);
       } else {
+        console.error(`${debugId} API returned success: false`);
+        console.error(`${debugId} Response:`, response);
         setStudents([]);
       }
     } catch (error) {
+      console.error(`${debugId} ========== FRONTEND ERROR ==========`);
+      console.error(`${debugId} Error message:`, error.message);
+      console.error(`${debugId} Error stack:`, error.stack);
+      console.error(`${debugId} Full error:`, error);
+      console.error(`${debugId} ========== END ERROR ==========`);
+      
       toast({
         title: "Error",
         description: "Failed to fetch students data",
@@ -216,6 +316,7 @@ const CodingProfilesManagementPage = () => {
       setStudents([]);
     } finally {
       setLoading(false);
+      console.log(`${debugId} ========== FRONTEND: fetchStudents END ==========`);
     }
   };
 
@@ -270,6 +371,13 @@ const CodingProfilesManagementPage = () => {
     } catch (error) {
       // Error fetching batches
     }
+  };
+
+  // Analytics function - overview stats are calculated from students array, so this is a no-op
+  const fetchAnalytics = async () => {
+    // Overview stats are calculated directly from the students state
+    // No separate API call needed
+    return;
   };
 
 
@@ -354,7 +462,7 @@ const CodingProfilesManagementPage = () => {
         description: "Deleting all profiles for this student...",
       });
       
-      const response = await apiService.delete(`/coding-profiles/student/${studentToDelete.student_id}`);
+      const response = await apiService.delete(`/coding-profiles/student/${studentToDelete.id}`);
       
       if (response.success) {
         toast({
@@ -501,36 +609,93 @@ const CodingProfilesManagementPage = () => {
 
   // Batch fetch platform statistics for multiple students
   const fetchBatchPlatformStats = async (studentIds, forceRefresh = false) => {
+    // Validate input
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      toast({
+        title: "Error",
+        description: "No students selected or available",
+        variant: "destructive",
+      });
+      return;
+    }
+    
     let unloadedStudents;
     
     if (forceRefresh) {
       // Force refresh: clear cache and reload all students
       unloadedStudents = studentIds;
+      // Clear all state for force refresh
       setLoadedStats(new Set());
       setStatsCache(new Map());
+      // Clear platform stats for the students being refreshed
+      setPlatformStats(prev => {
+        const newStats = { ...prev };
+        unloadedStudents.forEach(id => {
+          delete newStats[id];
+        });
+        return newStats;
+      });
     } else {
       // Normal mode: only load students that haven't been loaded
       unloadedStudents = studentIds.filter(id => !loadedStats.has(id) && !platformStats[id]);
     }
     
-    if (unloadedStudents.length === 0 && !forceRefresh) return;
+    if (unloadedStudents.length === 0 && !forceRefresh) {
+      toast({
+        title: "Info",
+        description: "All students already have statistics loaded",
+      });
+      return;
+    }
+    
+    // Double check before making API call
+    if (unloadedStudents.length === 0) {
+      toast({
+        title: "Info",
+        description: "No students to process",
+      });
+      return;
+    }
 
     // Use regular API calls
     try {
       setAutoLoading(true);
-      setLoadedStats(prev => new Set([...prev, ...unloadedStudents]));
+      
+      // Don't mark as loaded until we get the response
+      // setLoadedStats(prev => new Set([...prev, ...unloadedStudents]));
       
       // Use the new batch API endpoint
       const response = await apiService.fetchBatchPlatformStatistics(unloadedStudents, forceRefresh);
       
       if (response.success) {
-        const results = response.data.results;
+        const results = response.data.results || {};
         
-        // Update platform stats
-        setPlatformStats(prev => ({
-          ...prev,
-          ...results
-        }));
+        // Update platform stats - merge with existing stats
+        setPlatformStats(prev => {
+          const newStats = { ...prev };
+          Object.entries(results).forEach(([studentId, statsData]) => {
+            if (statsData) {
+              newStats[studentId] = statsData;
+            } else {
+              // Remove if null/undefined
+              delete newStats[studentId];
+            }
+          });
+          return newStats;
+        });
+        
+        // Mark students as loaded only if they have valid stats
+        setLoadedStats(prev => {
+          const newSet = new Set(prev);
+          Object.entries(results).forEach(([studentId, statsData]) => {
+            if (statsData) {
+              newSet.add(studentId);
+            } else {
+              newSet.delete(studentId);
+            }
+          });
+          return newSet;
+        });
         
         // Update cache for all results
         setStatsCache(prev => {
@@ -541,23 +706,41 @@ const CodingProfilesManagementPage = () => {
                 data: statsData,
                 timestamp: Date.now()
               });
+            } else {
+              newCache.delete(studentId);
             }
           });
           return newCache;
         });
         
+        const processedCount = response.data.processedCount || Object.keys(results).filter(id => results[id] !== null).length;
         toast({
           title: "Success",
-          description: `Loaded statistics for ${response.data.processedCount} students`,
+          description: `Loaded statistics for ${processedCount} students`,
         });
+      } else {
+        throw new Error(response.message || 'Failed to fetch batch statistics');
       }
     } catch (error) {
+      console.error('Error in fetchBatchPlatformStats:', error);
+      
       // Remove from loaded set on error
       setLoadedStats(prev => {
         const newSet = new Set(prev);
         unloadedStudents.forEach(id => newSet.delete(id));
         return newSet;
       });
+      
+      // Clear platform stats for failed students if force refresh
+      if (forceRefresh) {
+        setPlatformStats(prev => {
+          const newStats = { ...prev };
+          unloadedStudents.forEach(id => {
+            delete newStats[id];
+          });
+          return newStats;
+        });
+      }
       
       // Provide more specific error messages
       const isTimeout = error.message?.toLowerCase().includes('timeout') || 
@@ -592,10 +775,10 @@ const CodingProfilesManagementPage = () => {
     
     setPlatformStats(prev => ({
       ...prev,
-      [selectedStudentForManual.student_id]: {
-        ...prev[selectedStudentForManual.student_id],
+      [selectedStudentForManual.id]: {
+        ...prev[selectedStudentForManual.id],
         [selectedPlatformForManual]: {
-          ...prev[selectedStudentForManual.student_id]?.[selectedPlatformForManual],
+          ...prev[selectedStudentForManual.id]?.[selectedPlatformForManual],
           ...manualStats,
           manuallyEntered: true
         }
@@ -739,14 +922,14 @@ const CodingProfilesManagementPage = () => {
     try {
       // Process export data
       const exportData = students.map(student => {
-        const stats = platformStats[student.student_id] || {};
+        const stats = platformStats[student.id] || {};
         const hackerrankData = stats.hackerrank || {};
         const badgeString = processHackerRankBadges(hackerrankData.badges);
         
         return {
-          'Name': student.student_name,
-          'Email': student.student_email,
-          'Roll Number': student.student_roll_number,
+          'Name': student.name,
+          'Email': student.email,
+          'Roll Number': student.roll_number,
           'College Name': student.college_name,
           'Department': student.department,
           'Batch': student.batch,
@@ -1054,9 +1237,9 @@ const CodingProfilesManagementPage = () => {
                         }
                         return true;
                       })
-                      .filter(student => platformStats[student.student_id])
+                      .filter(student => platformStats[student.id])
                       .map(student => {
-                        const totalProblems = Object.entries(platformStats[student.student_id] || {})
+                        const totalProblems = Object.entries(platformStats[student.id] || {})
                           .filter(([platform, platformData]) => platform !== 'hackerrank')
                           .reduce((sum, [platform, platformData]) => sum + (platformData?.problemsSolved || 0), 0);
                         return { student, totalProblems };
@@ -1085,7 +1268,7 @@ const CodingProfilesManagementPage = () => {
                           {index + 1}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm truncate">{student.student_name}</div>
+                          <div className="font-medium text-sm truncate">{student.name}</div>
                           <div className="text-xs text-muted-foreground truncate">
                             {student.college_name} • {student.department}
                           </div>
@@ -1320,8 +1503,8 @@ const CodingProfilesManagementPage = () => {
                   {/* Refresh Button - Mobile Only */}
                   <div className="flex justify-center">
                     <Button
-                      onClick={() => fetchBatchPlatformStats(students.map(s => s.student_id), true)}
-                      disabled={autoLoading}
+                      onClick={() => fetchBatchPlatformStats(students.map(s => s.id), true)}
+                      disabled={autoLoading || students.length === 0}
                       variant="outline"
                       size="lg"
                       className="w-full sm:w-auto h-12 text-base font-medium"
@@ -1423,8 +1606,8 @@ const CodingProfilesManagementPage = () => {
 
                   {/* Refresh Stats Button */}
                   <Button
-                    onClick={() => fetchBatchPlatformStats(students.map(s => s.student_id), true)}
-                    disabled={autoLoading}
+                    onClick={() => fetchBatchPlatformStats(students.map(s => s.id), true)}
+                    disabled={autoLoading || students.length === 0}
                     variant="outline"
                     size="sm"
                     className="w-full lg:w-auto"
@@ -1475,15 +1658,19 @@ const CodingProfilesManagementPage = () => {
                               return true;
                             })
                             .map((student) => (
-                        <TableRow key={student.student_id}>
-                              <TableCell className="font-medium truncate">{student.student_name}</TableCell>
+                        <TableRow key={student.id}>
+                              <TableCell className="font-medium truncate">
+                                {student.name || 'N/A'}
+                              </TableCell>
                               <TableCell className="truncate">
-                                {student.student_email && student.student_email.length > 16 
-                                  ? `${student.student_email.substring(0, 16  )}...` 
-                                  : student.student_email
+                                {student.email 
+                                  ? (student.email.length > 16 
+                                      ? `${student.email.substring(0, 16)}...` 
+                                      : student.email)
+                                  : 'N/A'
                                 }
                               </TableCell>
-                              <TableCell className="truncate">{student.student_roll_number || 'N/A'}</TableCell>
+                              <TableCell className="truncate">{student.roll_number || 'N/A'}</TableCell>
                               <TableCell className="truncate">{student.college_name || 'N/A'}</TableCell>
                               <TableCell className="truncate">{student.department || 'N/A'}</TableCell>
                               <TableCell className="truncate">{student.batch || 'N/A'}</TableCell>
@@ -1492,7 +1679,7 @@ const CodingProfilesManagementPage = () => {
                               {['leetcode', 'codechef', 'hackerrank', 'hackerearth', 'geeksforgeeks'].map(platform => (
                                 <TableCell key={platform} className="text-center">
                                   {student.platforms?.[platform] ? (
-                                    platformStats[student.student_id]?.[platform] ? (
+                                    platformStats[student.id]?.[platform] ? (
                                       (platform === 'leetcode' || platform === 'hackerrank' || platform === 'geeksforgeeks') ? (
                                         <Tooltip delayDuration={100}>
                                           <TooltipTrigger asChild>
@@ -1507,12 +1694,12 @@ const CodingProfilesManagementPage = () => {
                                               }}
                                               onClick={() => {
                                                 if (platform === 'hackerrank') {
-                                                  handleHackerrankClick(student.student_id);
+                                                  handleHackerrankClick(student.id);
                                                 }
                                                 // Add more platform-specific handlers here
                                               }}
                                             >
-                                              {platformStats[student.student_id][platform].problemsSolved || 'N/A'}
+                                              {platformStats[student.id][platform].problemsSolved || 'N/A'}
                               </div>
                                           </TooltipTrigger>
                                           <TooltipContent>
@@ -1520,16 +1707,16 @@ const CodingProfilesManagementPage = () => {
                                               <div className="text-xs min-w-[180px]">
                                                 <div className="grid grid-cols-2 gap-2">
                                                   <div className="text-center">
-                                                    <div className="text-green-400 font-semibold">Easy: {String(platformStats[student.student_id][platform].easySolved || 'N/A')}</div>
+                                                    <div className="text-green-400 font-semibold">Easy: {String(platformStats[student.id][platform].easySolved || 'N/A')}</div>
                               </div>
                                                   <div className="text-center">
-                                                    <div className="text-yellow-400 font-semibold">Medium: {String(platformStats[student.student_id][platform].mediumSolved || 'N/A')}</div>
+                                                    <div className="text-yellow-400 font-semibold">Medium: {String(platformStats[student.id][platform].mediumSolved || 'N/A')}</div>
                               </div>
                                                   <div className="text-center">
-                                                    <div className="text-red-400 font-semibold">Hard: {String(platformStats[student.student_id][platform].hardSolved || 'N/A')}</div>
+                                                    <div className="text-red-400 font-semibold">Hard: {String(platformStats[student.id][platform].hardSolved || 'N/A')}</div>
                                                   </div>
                                                 <div className="text-center">
-                                                  <div className="text-blue-400 font-semibold">Rank: {platform === 'geeksforgeeks' ? 'N/A' : String(platformStats[student.student_id][platform].rank || 'N/A')}</div>
+                                                  <div className="text-blue-400 font-semibold">Rank: {platform === 'geeksforgeeks' ? 'N/A' : String(platformStats[student.id][platform].rank || 'N/A')}</div>
                                                 </div>
                                                 </div>
                                               </div>
@@ -1545,10 +1732,10 @@ const CodingProfilesManagementPage = () => {
                                               <div className="text-xs min-w-[180px]">
                                                 <div className="grid grid-cols-2 gap-2">
                                                   <div className="text-center">
-                                                    <div className="text-blue-400 font-semibold">Points: {String(platformStats[student.student_id][platform].points || 'N/A')}</div>
+                                                    <div className="text-blue-400 font-semibold">Points: {String(platformStats[student.id][platform].points || 'N/A')}</div>
                                                   </div>
                                                   <div className="text-center">
-                                                    <div className="text-green-400 font-semibold">Problems: {String(platformStats[student.student_id][platform].problemsSolved || 'N/A')}</div>
+                                                    <div className="text-green-400 font-semibold">Problems: {String(platformStats[student.id][platform].problemsSolved || 'N/A')}</div>
                                                   </div>
                                                 </div>
                                               </div>
@@ -1566,16 +1753,16 @@ const CodingProfilesManagementPage = () => {
                                                    '#9333ea'
                                           }}
                                         >
-                                          {platformStats[student.student_id][platform].problemsSolved || 'N/A'}
+                                          {platformStats[student.id][platform].problemsSolved || 'N/A'}
                               </div>
                                       )
                                     ) : (
                                       <div className="text-gray-400">
-                                        {loadedStats.has(student.student_id) ? 'Loading...' : (
+                                        {loadedStats.has(student.id) ? 'Loading...' : (
                                           <Button 
                                             size="sm" 
                                             variant="ghost" 
-                                            onClick={() => fetchStudentPlatformStats(student.student_id)}
+                                            onClick={() => fetchStudentPlatformStats(student.id)}
                                             className="text-xs"
                                           >
                                             Load
@@ -1651,7 +1838,7 @@ const CodingProfilesManagementPage = () => {
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onClick={() => fetchStudentPlatformStats(student.student_id)}>
+                                  <DropdownMenuItem onClick={() => fetchStudentPlatformStats(student.id)}>
                                     <RefreshCw className="h-4 w-4 mr-2" />
                                     Refresh Stats
                                   </DropdownMenuItem>
@@ -1687,14 +1874,14 @@ const CodingProfilesManagementPage = () => {
                               return true;
                             })
                             .map((student) => (
-                            <Card key={student.student_id} className="p-4">
+                            <Card key={student.id} className="p-4">
                               <div className="space-y-3">
                                 {/* Student Info */}
                                 <div className="flex items-start justify-between">
                                   <div className="flex-1">
-                                    <h3 className="font-semibold text-lg text-foreground">{student.student_name}</h3>
-                                    <p className="text-sm text-muted-foreground">{student.student_email}</p>
-                                    <p className="text-xs text-muted-foreground">Roll: {student.student_roll_number || 'N/A'}</p>
+                                    <h3 className="font-semibold text-lg text-foreground">{student.name}</h3>
+                                    <p className="text-sm text-muted-foreground">{student.email}</p>
+                                    <p className="text-xs text-muted-foreground">Roll: {student.roll_number || 'N/A'}</p>
                                   </div>
                                   <DropdownMenu>
                                     <DropdownMenuTrigger asChild>
@@ -1703,7 +1890,7 @@ const CodingProfilesManagementPage = () => {
                                       </Button>
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
-                                      <DropdownMenuItem onClick={() => fetchStudentPlatformStats(student.student_id)}>
+                                      <DropdownMenuItem onClick={() => fetchStudentPlatformStats(student.id)}>
                                         <RefreshCw className="h-4 w-4 mr-2" />
                                         Refresh Stats
                                       </DropdownMenuItem>
@@ -1747,7 +1934,7 @@ const CodingProfilesManagementPage = () => {
                                         <span className="text-xs font-medium capitalize mb-1">{platform}</span>
                                         <div className="text-center">
                                           {student.platforms?.[platform] ? (
-                                            platformStats[student.student_id]?.[platform] ? (
+                                            platformStats[student.id]?.[platform] ? (
                                               <div 
                                                 className="font-bold text-sm" 
                                                 style={{
@@ -1758,11 +1945,11 @@ const CodingProfilesManagementPage = () => {
                                                          '#9333ea'
                                                 }}
                                               >
-                                                {platformStats[student.student_id][platform].problemsSolved || 'N/A'}
+                                                {platformStats[student.id][platform].problemsSolved || 'N/A'}
                                               </div>
                                             ) : (
                                               <div className="text-muted-foreground text-xs">
-                                                {loadedStats.has(student.student_id) ? 'Loading...' : 'Load'}
+                                                {loadedStats.has(student.id) ? 'Loading...' : 'Load'}
                                               </div>
                                             )
                                           ) : (
@@ -1965,7 +2152,7 @@ const CodingProfilesManagementPage = () => {
       <Dialog open={editProfilesDialog} onOpenChange={setEditProfilesDialog}>
         <DialogContent className="max-w-lg mx-4 sm:mx-0">
           <DialogHeader>
-            <DialogTitle className="text-lg">Edit Profiles - {editingStudent?.student_name}</DialogTitle>
+            <DialogTitle className="text-lg">Edit Profiles - {editingStudent?.name}</DialogTitle>
           </DialogHeader>
           
           <div className="space-y-3 max-h-96 overflow-y-auto">
@@ -2053,13 +2240,13 @@ const CodingProfilesManagementPage = () => {
                   for (const profile of editingProfiles) {
                     if (profile.id) {
                       // Update existing profile using Super Admin endpoint
-                      await apiService.updateStudentCodingProfile(editingStudent.student_id, profile.id, {
+                      await apiService.updateStudentCodingProfile(editingStudent.id, profile.id, {
                         platform: profile.platform,
                         username: profile.username
                       });
                     } else {
                       // Add new profile
-                      await apiService.addCodingProfile(editingStudent.student_id, {
+                      await apiService.addCodingProfile(editingStudent.id, {
                         platform: profile.platform,
                         username: profile.username
                       });
@@ -2094,7 +2281,7 @@ const CodingProfilesManagementPage = () => {
           <DialogHeader>
             <DialogTitle className="text-lg">Add New Profile</DialogTitle>
             <DialogDescription>
-              Add a coding profile for {editingStudent?.student_name}
+              Add a coding profile for {editingStudent?.name}
             </DialogDescription>
           </DialogHeader>
           
@@ -2185,7 +2372,7 @@ const CodingProfilesManagementPage = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete All Profiles</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete all coding profiles for {studentToDelete?.student_name}? 
+              Are you sure you want to delete all coding profiles for {studentToDelete?.name}? 
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

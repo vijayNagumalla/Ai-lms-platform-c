@@ -5,20 +5,37 @@
 import pg from 'pg';
 const { Pool } = pg;
 
-// The exact connection string format you showed from Supabase
-// Note: You showed "Vijay@@2607@" which might be a typo or the actual format
+// SECURITY FIX: Read from environment variables
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config({ path: join(__dirname, '..', '.env') });
+
+const password = process.env.SUPABASE_DB_PASSWORD;
+const projectRef = process.env.SUPABASE_PROJECT_REF || 'zhacsxhsjgfnniefmadh';
+const region = process.env.SUPABASE_REGION || 'ap-south-1';
+
+if (!password) {
+  console.error('❌ ERROR: SUPABASE_DB_PASSWORD environment variable is required');
+  console.error('   Set it in your backend/.env file');
+  process.exit(1);
+}
+
+// Test different password encoding formats
+const encodedPassword = encodeURIComponent(password);
 const connectionStrings = [
-  // Option 1: Use the exact string you showed (with double @)
-  'postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay@@2607@aws-1-ap-south-1.pooler.supabase.com:5432/postgres',
+  // Option 1: URL-encoded (recommended)
+  `postgresql://postgres.${projectRef}:${encodedPassword}@aws-1-${region}.pooler.supabase.com:5432/postgres`,
   
-  // Option 2: Single @ (correct password)
-  'postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay@2607@aws-1-ap-south-1.pooler.supabase.com:5432/postgres',
+  // Option 2: Raw password (not encoded)
+  `postgresql://postgres.${projectRef}:${password}@aws-1-${region}.pooler.supabase.com:5432/postgres`,
   
-  // Option 3: URL-encoded (what we've been using)
-  'postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay%402607%40@aws-1-ap-south-1.pooler.supabase.com:5432/postgres',
-  
-  // Option 4: Double @ URL-encoded
-  'postgresql://postgres.zhacsxhsjgfnniefmadh:Vijay%40%402607%40@aws-1-ap-south-1.pooler.supabase.com:5432/postgres',
+  // Option 3: Try with aws-0 instead of aws-1
+  `postgresql://postgres.${projectRef}:${encodedPassword}@aws-0-${region}.pooler.supabase.com:6543/postgres`,
 ];
 
 console.log('\n🔍 Testing Connection String Formats\n');

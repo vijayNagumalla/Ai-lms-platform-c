@@ -57,17 +57,91 @@ class ProctoringService {
             await db.query('SELECT id FROM proctoring_consents LIMIT 1');
             this.consentTableAvailable = true;
         } catch (error) {
+            // Check if error message contains HTML (Cloudflare error pages)
+            const errorMessage = error.message || '';
+            const isHtmlError = 
+                errorMessage.includes('<!DOCTYPE') ||
+                errorMessage.includes('<!doctype') ||
+                errorMessage.includes('<html');
+            
+            // Check for Cloudflare 521 error (Web server is down)
+            const isCloudflare521 = 
+                isHtmlError && (
+                    errorMessage.includes('521') ||
+                    errorMessage.includes('Web server is down')
+                );
+            
+            // Check for network/DNS failures (temporary issues)
+            const isNetworkError = 
+                isCloudflare521 ||
+                error.message?.includes('ENOTFOUND') ||
+                error.message?.includes('getaddrinfo') ||
+                error.message?.includes('fetch failed') ||
+                error.message?.includes('ECONNREFUSED') ||
+                error.message?.includes('ETIMEDOUT') ||
+                error.message?.includes('ConnectTimeoutError') ||
+                error.message?.includes('Connection timeout') ||
+                error.message?.includes('network') ||
+                error.name === 'ConnectTimeoutError' ||
+                error.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+                (error.details && (error.details.includes('ENOTFOUND') || error.details.includes('ConnectTimeoutError')));
+            
             if (error.code === 'PGRST205' || error.message?.includes('does not exist')) {
                 console.warn('Proctoring consent table not found in Supabase. Please run the latest migrations.');
+            } else if (isNetworkError) {
+                // Network errors are temporary - log at debug level, don't mark as unavailable permanently
+                if (isCloudflare521) {
+                    console.warn('Supabase database server is down (Cloudflare 521) - consent table check will retry later');
+                } else {
+                    console.debug('Network error verifying consent table (will retry later):', error.message?.substring(0, 100));
+                }
+                // Reset check flag so we can retry later
+                this.consentTableChecked = false;
             } else {
                 console.error('Error verifying consent table:', error);
             }
             this.consentTableAvailable = false;
         } finally {
-            this.consentTableChecked = true;
+            // Only mark as checked if it's not a network error (so we can retry)
+            if (this.consentTableChecked || !this.consentTableAvailable) {
+                this.consentTableChecked = true;
+            }
         }
 
         return this.consentTableAvailable;
+    }
+    
+    // Helper method to check if error is a network/connectivity issue
+    isNetworkError(error) {
+        const errorMessage = error.message || '';
+        const errorDetails = error.details || '';
+        const errorString = JSON.stringify(error).toLowerCase();
+        const errorName = error.name || '';
+        
+        return (
+            errorMessage.includes('ENOTFOUND') ||
+            errorMessage.includes('getaddrinfo') ||
+            errorMessage.includes('fetch failed') ||
+            errorMessage.includes('ECONNREFUSED') ||
+            errorMessage.includes('ETIMEDOUT') ||
+            errorMessage.includes('ConnectTimeoutError') ||
+            errorMessage.includes('Connection timeout') ||
+            errorMessage.includes('timeout') ||
+            errorMessage.includes('network') ||
+            errorDetails.includes('ENOTFOUND') ||
+            errorDetails.includes('getaddrinfo') ||
+            errorDetails.includes('ConnectTimeoutError') ||
+            errorDetails.includes('timeout') ||
+            errorString.includes('enotfound') ||
+            errorString.includes('fetch failed') ||
+            errorString.includes('connecttimeout') ||
+            errorString.includes('und_err_connect_timeout') ||
+            errorName === 'ConnectTimeoutError' ||
+            error.code === 'ENOTFOUND' ||
+            error.code === 'ECONNREFUSED' ||
+            error.code === 'ETIMEDOUT' ||
+            error.code === 'UND_ERR_CONNECT_TIMEOUT'
+        );
     }
     
     // CRITICAL FIX: GDPR/Privacy compliance - Auto-delete old proctoring data
@@ -87,8 +161,21 @@ class ProctoringService {
                     [cutoffIso]
                 );
             } catch (error) {
-                // Table doesn't exist yet, which is fine
-                if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== '42P01' && error.code !== 'PGRST205' && !error.message?.includes('does not exist')) {
+                // Check if it's a network error (temporary) vs other errors
+                const isNetworkErr = this.isNetworkError(error);
+                const isTableMissing = 
+                    error.code === 'ER_NO_SUCH_TABLE' || 
+                    error.code === '42P01' || 
+                    error.code === 'PGRST205' || 
+                    error.message?.includes('does not exist');
+                
+                if (isTableMissing) {
+                    // Table doesn't exist yet, which is fine - skip silently
+                } else if (isNetworkErr) {
+                    // Network errors are temporary - log at debug level
+                    console.debug('Network error during proctoring logs cleanup (will retry later):', error.message?.substring(0, 100));
+                } else {
+                    // Other errors should be logged
                     console.error('Error deleting old proctoring logs:', error);
                 }
             }
@@ -105,8 +192,20 @@ class ProctoringService {
                     anonymizedConsents = result.affectedRows || 0;
                 }
             } catch (error) {
-                // Table doesn't exist yet, which is fine - it will be created when needed
-                if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== 'PGRST205') {
+                // Check if it's a network error (temporary) vs other errors
+                const isNetworkErr = this.isNetworkError(error);
+                const isTableMissing = 
+                    error.code === 'ER_NO_SUCH_TABLE' || 
+                    error.code === 'PGRST205' ||
+                    error.message?.includes('does not exist');
+                
+                if (isTableMissing) {
+                    // Table doesn't exist yet, which is fine - it will be created when needed
+                } else if (isNetworkErr) {
+                    // Network errors are temporary - log at debug level
+                    console.debug('Network error during consent cleanup (will retry later):', error.message?.substring(0, 100));
+                } else {
+                    // Other errors should be logged
                     console.error('Error anonymizing old consents:', error);
                 }
             }
@@ -120,9 +219,21 @@ class ProctoringService {
                 anonymizedConsents 
             };
         } catch (error) {
-            // CRITICAL FIX: Don't throw errors for missing tables - they're optional
-            // Only log unexpected errors
-            if (error.code !== 'ER_NO_SUCH_TABLE' && error.code !== '42P01' && error.code !== 'PGRST205' && !error.message?.includes('does not exist')) {
+            // Check if it's a network error (temporary) vs other errors
+            const isNetworkErr = this.isNetworkError(error);
+            const isTableMissing = 
+                error.code === 'ER_NO_SUCH_TABLE' || 
+                error.code === '42P01' || 
+                error.code === 'PGRST205' || 
+                error.message?.includes('does not exist');
+            
+            if (isTableMissing) {
+                // Table doesn't exist yet, which is fine - skip silently
+            } else if (isNetworkErr) {
+                // Network errors are temporary - log at debug level
+                console.debug('Network error during proctoring cleanup (will retry later):', error.message?.substring(0, 100));
+            } else {
+                // Other unexpected errors should be logged
                 console.error('Error cleaning up old proctoring data:', error);
             }
             return { deletedLogs: 0, anonymizedConsents: 0 };

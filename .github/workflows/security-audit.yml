@@ -42,6 +42,7 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         run: |
           echo "Running npm audit for ${{ matrix.working-directory }}"
+          npm audit --audit-level=moderate --json > npm-audit-results.json || true
           npm audit --audit-level=moderate || true
       
       - name: Run npm audit fix (dry-run)
@@ -50,12 +51,25 @@ jobs:
           echo "Checking for auto-fixable vulnerabilities"
           npm audit fix --dry-run || true
       
+      - name: Check for critical vulnerabilities
+        working-directory: ${{ matrix.working-directory }}
+        run: |
+          echo "Checking for critical vulnerabilities"
+          if npm audit --audit-level=critical 2>&1 | grep -q "found"; then
+            echo "❌ Critical vulnerabilities found!"
+            npm audit --audit-level=critical
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities found"
+          fi
+      
       - name: Upload audit results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: audit-results-${{ matrix.working-directory }}
           path: |
-            ${{ matrix.working-directory }}/npm-audit.json
+            ${{ matrix.working-directory }}/npm-audit-results.json
           retention-days: 7
+          if-no-files-found: ignore
 

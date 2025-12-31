@@ -41,9 +41,21 @@ async function main() {
     }
   }
   
-  // Replace password placeholder
-  const password = 'Vijay%402607%40';
-  const finalString = poolerString.replace(/\[YOUR[_-]?PASSWORD\]/gi, password);
+  // SECURITY FIX: Get password from environment variable or prompt
+  let password = process.env.SUPABASE_DB_PASSWORD;
+  
+  if (!password) {
+    password = await question('Enter your Supabase database password (will be URL-encoded): ');
+    if (!password) {
+      console.log('❌ Password is required');
+      rl.close();
+      return;
+    }
+  }
+  
+  // URL-encode the password
+  const encodedPassword = encodeURIComponent(password);
+  const finalString = poolerString.replace(/\[YOUR[_-]?PASSWORD\]/gi, encodedPassword);
   
   console.log('\n📝 Final connection string:');
   console.log(`   ${finalString.replace(/:([^:@]+)@/, ':***@')}\n`);

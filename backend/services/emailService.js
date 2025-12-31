@@ -32,8 +32,11 @@ class EmailService {
         rateLimit: appConfig.email.rateLimit
       });
 
-      // Verify connection configuration
-      this.verifyConnection();
+      // PERFORMANCE FIX: Verify connection asynchronously with timeout to avoid blocking startup
+      // Don't await - let it run in background and fail gracefully
+      this.verifyConnection().catch(() => {
+        // Silently handle - error is already logged in verifyConnection
+      });
     } else {
       this.transporter = null;
     }
@@ -42,32 +45,52 @@ class EmailService {
   async verifyConnection() {
     try {
       if (this.transporter) {
-        await this.transporter.verify();
+        // PERFORMANCE FIX: Add timeout to prevent hanging on network issues
+        const timeout = 10000; // 10 seconds timeout
+        const verificationPromise = this.transporter.verify();
+        
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Connection verification timeout')), timeout);
+        });
+
+        await Promise.race([verificationPromise, timeoutPromise]);
         console.log('✅ Email service connection verified successfully');
       }
     } catch (error) {
-      // CRITICAL FIX: Log errors properly instead of swallowing them
-      console.error('❌ Email service connection verification failed:', {
-        message: error.message,
-        code: error.code,
-        command: error.command,
-        response: error.response,
-        responseCode: error.responseCode
-      });
+      // CRITICAL FIX: Log errors properly but don't block service initialization
+      // Only log at warn level for network timeouts (common in development)
+      const isTimeout = error.message?.includes('timeout') || error.code === 'ETIMEDOUT' || error.code === 'ESOCKET';
+      const logLevel = isTimeout ? 'warn' : 'error';
       
-      // Provide helpful troubleshooting for Gmail authentication errors
-      if (error.code === 'EAUTH' || error.responseCode === 535) {
-        console.error('\n🔧 Gmail Authentication Error - Troubleshooting Steps:');
-        console.error('   1. Gmail requires an App Password (not your regular password)');
-        console.error('   2. Enable 2-Factor Authentication on your Google account');
-        console.error('   3. Generate an App Password: https://myaccount.google.com/apppasswords');
-        console.error('   4. Use the App Password in your SMTP_PASS environment variable');
-        console.error('   5. Make sure SMTP_USER is your full Gmail address (e.g., user@gmail.com)');
-        console.error('   📖 See GMAIL_EMAIL_SETUP_GUIDE.md for detailed instructions\n');
+      if (logLevel === 'warn') {
+        console.warn('⚠️ Email service connection verification timed out or failed (this is OK - emails will still attempt to send):', {
+          message: error.message,
+          code: error.code
+        });
+        console.warn('   Email service will attempt to connect when sending emails. This is normal if SMTP server is not accessible during startup.');
+      } else {
+        console.error('❌ Email service connection verification failed:', {
+          message: error.message,
+          code: error.code,
+          command: error.command,
+          response: error.response,
+          responseCode: error.responseCode
+        });
+        
+        // Provide helpful troubleshooting for Gmail authentication errors
+        if (error.code === 'EAUTH' || error.responseCode === 535) {
+          console.error('\n🔧 Gmail Authentication Error - Troubleshooting Steps:');
+          console.error('   1. Gmail requires an App Password (not your regular password)');
+          console.error('   2. Enable 2-Factor Authentication on your Google account');
+          console.error('   3. Generate an App Password: https://myaccount.google.com/apppasswords');
+          console.error('   4. Use the App Password in your SMTP_PASS environment variable');
+          console.error('   5. Make sure SMTP_USER is your full Gmail address (e.g., user@gmail.com)');
+          console.error('   📖 See GMAIL_EMAIL_SETUP_GUIDE.md for detailed instructions\n');
+        }
       }
       
-      // In production, alert administrators about email service issues
-      if (process.env.NODE_ENV === 'production') {
+      // In production, alert administrators about email service issues (only for non-timeout errors)
+      if (process.env.NODE_ENV === 'production' && !isTimeout) {
         console.error('⚠️ WARNING: Email service is not properly configured. Email notifications may fail.');
       }
       
@@ -369,6 +392,57 @@ class EmailService {
       await this.trackEmailDelivery(recipient, { ...assessmentDetails, is_reminder: true }, messageId, 'failed');
       await this.updateEmailStatus(messageId, 'failed', error.message);
       throw error;
+    }
+  }
+
+  // Send custom email (for contact sharing, etc.)
+  async sendCustomEmail(to, subject, htmlContent, textContent = null) {
+    try {
+      // Check if email service is configured
+      if (!this.isConfigured || !this.transporter) {
+        return { 
+          success: false, 
+          message: 'Email service not configured. Please configure SMTP settings.',
+          errorType: 'NOT_CONFIGURED'
+        };
+      }
+
+      const mailOptions = {
+        from: process.env.SMTP_FROM || 'noreply@lms-platform.com',
+        to: to,
+        subject: subject,
+        html: htmlContent,
+        ...(textContent && { text: textContent })
+      };
+
+      // Retry email sending with exponential backoff
+      const info = await retryWithBackoff(
+        () => this.transporter.sendMail(mailOptions),
+        {
+          maxRetries: 3,
+          initialDelay: 1000,
+          maxDelay: 10000,
+          retryableErrors: [/ECONNREFUSED/, /ETIMEDOUT/, /ENOTFOUND/, /ECONNRESET/],
+          onRetry: (attempt, error) => {
+            console.warn(`Email send retry attempt ${attempt}:`, error.message);
+          }
+        }
+      );
+
+      const messageId = info.messageId || `email_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      return { 
+        success: true, 
+        messageId,
+        message: 'Email sent successfully'
+      };
+    } catch (error) {
+      console.error('Error sending custom email:', error);
+      return { 
+        success: false, 
+        message: 'Failed to send email',
+        error: error.message
+      };
     }
   }
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -52,33 +52,42 @@ const AddProfileModal = ({ onProfileAdded }) => {
     }
   };
 
-  const searchStudents = async (searchTerm) => {
-    if (!searchTerm || searchTerm.length < 2) {
+  const searchStudents = useCallback(async (searchTerm) => {
+    if (!searchTerm || searchTerm.trim().length === 0) {
       setStudents([]);
       return;
     }
 
     setSearching(true);
     try {
-      const response = await apiService.get(`/users/search?q=${encodeURIComponent(searchTerm)}&role=student&limit=10`);
+      const response = await apiService.get(`/users/search?q=${encodeURIComponent(searchTerm.trim())}&role=student&limit=20`);
       
       if (response.success) {
-        setStudents(response.data);
+        setStudents(response.data || []);
       } else {
         setStudents([]);
       }
     } catch (error) {
       console.error('Error searching students:', error);
-      toast({
-        title: "Error",
-        description: "Failed to search students.",
-        variant: "destructive",
-      });
+      // Don't show toast for search errors to avoid spam
       setStudents([]);
     } finally {
       setSearching(false);
     }
-  };
+  }, []);
+
+  // Debounce search with useEffect
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (searchTerm.trim()) {
+        searchStudents(searchTerm.trim());
+      } else {
+        setStudents([]);
+      }
+    }, 300); // 300ms debounce delay
+
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm, searchStudents]);
 
   const handleStudentSelect = (student) => {
     setSelectedStudent(student);
@@ -99,7 +108,7 @@ const AddProfileModal = ({ onProfileAdded }) => {
 
     if (field === 'studentSearch') {
       setSearchTerm(value);
-      searchStudents(value);
+      // Search is now handled by useEffect with debouncing
     }
   };
 
@@ -149,37 +158,88 @@ const AddProfileModal = ({ onProfileAdded }) => {
         }
       });
 
-      // Add each profile
+      // Track results for each profile
+      const results = {
+        success: [],
+        failed: []
+      };
+
+      // Add each profile, handling errors individually
       for (const profile of profilesToAdd) {
-        await apiService.post('/coding-profiles/profiles', {
-          student_id: selectedStudent.id,
-          platform: profile.platform,
-          username: profile.username
-        });
+        try {
+          await apiService.post('/coding-profiles/profiles', {
+            student_id: selectedStudent.id,
+            platform: profile.platform,
+            username: profile.username
+          });
+          results.success.push(profile);
+        } catch (error) {
+          console.error(`Error adding profile for ${profile.platform}:`, error);
+          const errorMessage = error.response?.data?.message || error.message || 'Unknown error';
+          results.failed.push({
+            ...profile,
+            error: errorMessage
+          });
+        }
       }
 
-      toast({
-        title: "Success",
-        description: `Added ${profilesToAdd.length} profile(s) for ${selectedStudent.name}`,
-      });
-
-      // Reset form
-      setFormData({
-        studentSearch: '',
-        rollNumber: '',
-        email: '',
-        leetcode: '',
-        codechef: '',
-        hackerrank: '',
-        hackerearth: '',
-        geeksforgeeks: ''
-      });
-      setSelectedStudent(null);
-      setSearchTerm('');
-      setIsOpen(false);
+      // Show appropriate toast message based on results
+      if (results.success.length > 0 && results.failed.length === 0) {
+        // All profiles added successfully
+        toast({
+          title: "Success",
+          description: `Added ${results.success.length} profile(s) for ${selectedStudent.name}`,
+        });
+        
+        // Reset form and close modal
+        setFormData({
+          studentSearch: '',
+          rollNumber: '',
+          email: '',
+          leetcode: '',
+          codechef: '',
+          hackerrank: '',
+          hackerearth: '',
+          geeksforgeeks: ''
+        });
+        setSelectedStudent(null);
+        setSearchTerm('');
+        setIsOpen(false);
+      } else if (results.success.length > 0 && results.failed.length > 0) {
+        // Partial success
+        const failedMessages = results.failed.map(f => `${f.platform}: ${f.error}`).join(', ');
+        toast({
+          title: "Partial Success",
+          description: `Added ${results.success.length} profile(s). Failed: ${failedMessages}`,
+          variant: "default",
+        });
+        
+        // Still reset form and close modal since some profiles were added
+        setFormData({
+          studentSearch: '',
+          rollNumber: '',
+          email: '',
+          leetcode: '',
+          codechef: '',
+          hackerrank: '',
+          hackerearth: '',
+          geeksforgeeks: ''
+        });
+        setSelectedStudent(null);
+        setSearchTerm('');
+        setIsOpen(false);
+      } else {
+        // All profiles failed
+        const errorMessages = results.failed.map(f => `${f.platform}: ${f.error}`).join('; ');
+        toast({
+          title: "Error",
+          description: `Failed to add profiles: ${errorMessages}`,
+          variant: "destructive",
+        });
+      }
       
-      // Notify parent to refresh data
-      if (onProfileAdded) {
+      // Notify parent to refresh data if any profiles were added
+      if (results.success.length > 0 && onProfileAdded) {
         onProfileAdded();
       }
     } catch (error) {
@@ -260,7 +320,7 @@ const AddProfileModal = ({ onProfileAdded }) => {
                 ))}
               </div>
             )}
-            {searchTerm && searchTerm.length >= 2 && students.length === 0 && !searching && (
+            {searchTerm && searchTerm.trim().length > 0 && students.length === 0 && !searching && (
               <div className="p-2 text-sm text-gray-500 bg-gray-50 rounded-md">
                 No students found for "{searchTerm}"
               </div>

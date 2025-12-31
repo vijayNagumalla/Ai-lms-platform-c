@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { pool } from '../config/database.js';
+import cache from '../utils/cache.js';
 
 const isSupabase = !!process.env.SUPABASE_URL;
 
@@ -239,12 +240,43 @@ export const login = async (req, res) => {
       // Handle [rows, fields] format
       users = Array.isArray(result) && result.length > 0 ? result[0] : [];
     } catch (dbError) {
-      console.error('[Login] Database error fetching user:', dbError);
+      // Check if it's a network/DNS error (temporary connectivity issue)
+      const isNetworkError = 
+        dbError.message?.includes('ENOTFOUND') ||
+        dbError.message?.includes('getaddrinfo') ||
+        dbError.message?.includes('fetch failed') ||
+        dbError.message?.includes('ECONNREFUSED') ||
+        dbError.message?.includes('ETIMEDOUT') ||
+        dbError.message?.includes('Network error connecting to Supabase') ||
+        (dbError.details && dbError.details.includes('ENOTFOUND')) ||
+        dbError.isNetworkError === true ||
+        dbError.code === 'ENOTFOUND' ||
+        dbError.code === 'ECONNREFUSED' ||
+        dbError.code === 'ETIMEDOUT';
+      
+      if (isNetworkError) {
+        // Network errors are temporary - log at debug level and return user-friendly error
+        console.debug('[Login] Database network error (temporary):', dbError.message?.substring(0, 100));
+        return res.status(503).json({
+          success: false,
+          message: 'Database temporarily unavailable. Please try again in a moment.',
+          error: 'SERVICE_UNAVAILABLE'
+        });
+      }
+      
+      // Other database errors should be logged
+      console.error('[Login] Database error fetching user:', {
+        message: dbError.message,
+        code: dbError.code,
+        // Don't log full details for network errors
+        ...(dbError.details && !dbError.details.includes('ENOTFOUND') ? { details: dbError.details } : {})
+      });
       throw new Error('Database connection error');
     }
 
     if (users.length === 0) {
       // CRITICAL FIX: Track failed login attempt even if user doesn't exist (prevent user enumeration)
+      console.log(`[Login] User not found for email: ${email}`);
       await recordFailedLoginAttempt(email, req.ip);
       return res.status(401).json({
         success: false,
@@ -253,10 +285,12 @@ export const login = async (req, res) => {
     }
 
     const user = users[0];
+    console.log(`[Login] User found: ${user.email}, ID: ${user.id}, Active: ${user.is_active}, Email Verified: ${user.email_verified}`);
 
     // CRITICAL FIX: Check if email is verified
     // In development mode, auto-verify if email service is not configured
     if (!user.email_verified) {
+      console.log(`[Login] Email not verified for user ${user.id}`);
       if (process.env.NODE_ENV === 'development') {
         try {
           const emailService = (await import('../services/emailService.js')).default;
@@ -268,7 +302,9 @@ export const login = async (req, res) => {
             );
             user.email_verified = true;
             user.is_active = true;
+            console.log(`[Login] Auto-verified email for user ${user.id}`);
           } else {
+            console.log(`[Login] Email service configured, requiring email verification for user ${user.id}`);
             return res.status(403).json({
               success: false,
               message: 'Please verify your email address before logging in. Check your inbox for the verification link.',
@@ -276,7 +312,7 @@ export const login = async (req, res) => {
             });
           }
         } catch (error) {
-          console.error('Error auto-verifying email:', error);
+          console.error('[Login] Error auto-verifying email:', error);
           return res.status(403).json({
             success: false,
             message: 'Please verify your email address before logging in. Check your inbox for the verification link.',
@@ -284,6 +320,7 @@ export const login = async (req, res) => {
           });
         }
       } else {
+        console.log(`[Login] Production mode: Email verification required for user ${user.id}`);
         return res.status(403).json({
           success: false,
           message: 'Please verify your email address before logging in. Check your inbox for the verification link.',
@@ -314,30 +351,50 @@ export const login = async (req, res) => {
     let isPasswordValid = false;
     let needsPasswordMigration = false;
 
+    console.log(`[Login] Verifying password for user ${user.id}`);
+    
+    // Check if user has a password set
+    if (!user.password) {
+      console.error(`[Login] User ${user.id} has no password set - cannot login`);
+      await recordFailedLoginAttempt(email, req.ip, user.id);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+        hint: 'User account has no password set. Please contact administrator or reset password.'
+      });
+    }
+
     if (user.password.startsWith('$2')) {
       // Password is hashed, use bcrypt compare
+      console.log(`[Login] Password is hashed, using bcrypt compare`);
       isPasswordValid = await bcrypt.compare(password, user.password);
+      console.log(`[Login] Password verification result: ${isPasswordValid}`);
     } else {
       // Legacy plain text passwords - auto-migrate on successful login
-      console.warn(`Security: User ${user.id} has plain text password - auto-migrating to hashed`);
+      console.warn(`[Login] Security: User ${user.id} has plain text password - auto-migrating to hashed`);
 
       // Check if plain text password matches
       if (user.password === password) {
         isPasswordValid = true;
         needsPasswordMigration = true;
+        console.log(`[Login] Plain text password matches`);
       } else {
         // Password doesn't match, treat as failed login
         isPasswordValid = false;
+        console.log(`[Login] Plain text password does not match`);
       }
     }
 
     if (!isPasswordValid) {
+      console.log(`[Login] Password verification failed for user ${user.id}`);
       // CRITICAL FIX: Record failed login attempt
       await recordFailedLoginAttempt(email, req.ip, user.id);
 
       // Check if account should be locked after this attempt
       const lockoutInfo = await checkAccountLockout(user.id);
+      console.log(`[Login] Lockout info:`, lockoutInfo);
       if (lockoutInfo.shouldLock) {
+        console.log(`[Login] Account should be locked, locking now`);
         await lockAccount(user.id, lockoutInfo.lockoutMinutes);
         return res.status(423).json({
           success: false,
@@ -353,6 +410,8 @@ export const login = async (req, res) => {
       });
     }
 
+    console.log(`[Login] Password verified successfully for user ${user.id}`);
+
     // CRITICAL FIX: Clear failed login attempts on successful login
     await clearFailedLoginAttempts(user.id);
 
@@ -361,8 +420,9 @@ export const login = async (req, res) => {
       try {
         const saltRounds = 12;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
+        // PostgreSQL: Use NOW() function instead of CURRENT_TIMESTAMP as parameter
         await pool.execute(
-          'UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          'UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?',
           [hashedPassword, user.id]
         );
         console.log(`✅ Successfully migrated password for user ${user.id} to hashed format`);
@@ -423,25 +483,66 @@ export const login = async (req, res) => {
 
 // Get current user profile
 export const getProfile = async (req, res) => {
+  // PERFORMANCE FIX: Use req.user data directly (already fetched by auth middleware)
+  // No need for redundant database query
   try {
-    const [users] = await pool.execute(
-      'SELECT id, email, name, role, college_id, department, student_id, phone, avatar_url, country, is_active, email_verified, created_at, updated_at FROM users WHERE id = ?',
-      [req.user.id]
-    );
+    // req.user already contains the user data from authenticateToken middleware
+    // Just format it to match the expected response structure
+    const userData = {
+      id: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      role: req.user.role,
+      college_id: req.user.college_id,
+      department: req.user.department,
+      student_id: req.user.student_id,
+      phone: req.user.phone,
+      avatar_url: req.user.avatar_url,
+      country: req.user.country,
+      is_active: req.user.is_active,
+      // These fields might not be in req.user, so fetch only if needed
+      email_verified: req.user.email_verified,
+      created_at: req.user.created_at,
+      updated_at: req.user.updated_at
+    };
 
-    if (users.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
+    // If we need additional fields not in req.user, fetch them (but cache the result)
+    const cacheKey = `user_profile_full_${req.user.id}`;
+    const cached = cache.get(cacheKey);
+    
+    if (cached !== null && userData.email_verified !== undefined) {
+      // We have all data from cache
+      return res.json({
+        success: true,
+        data: cached
       });
     }
 
-    res.json({
+    // Only fetch if we're missing email_verified, created_at, or updated_at
+    if (userData.email_verified === undefined || userData.created_at === undefined) {
+      const [users] = await pool.execute(
+        'SELECT email_verified, created_at, updated_at FROM users WHERE id = ?',
+        [req.user.id]
+      );
+
+      if (users.length > 0) {
+        userData.email_verified = users[0].email_verified;
+        userData.created_at = users[0].created_at;
+        userData.updated_at = users[0].updated_at;
+      }
+    }
+
+    // Cache full profile for 30 seconds
+    cache.set(cacheKey, userData, 30 * 1000);
+
+    const response = {
       success: true,
-      data: users[0]
-    });
+      data: userData
+    };
+
+    res.json(response);
   } catch (error) {
-    // Get profile error
+    console.error('Get profile error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -457,7 +558,7 @@ export const updateProfile = async (req, res) => {
 
     // Update user
     const [result] = await pool.execute(
-      'UPDATE users SET name = ?, phone = ?, avatar_url = ?, country = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      'UPDATE users SET name = ?, phone = ?, avatar_url = ?, country = ?, updated_at = NOW() WHERE id = ?',
       [name, phone, avatar_url, country, userId]
     );
 
@@ -550,7 +651,7 @@ export const changePassword = async (req, res) => {
 
     // Update password
     await pool.execute(
-      'UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        'UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?',
       [hashedNewPassword, userId]
     );
 
@@ -923,7 +1024,7 @@ export const resetPasswordWithToken = async (req, res) => {
 
     // Update password
     await pool.execute(
-      'UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        'UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?',
       [hashedPassword, tokenData.user_id]
     );
 
@@ -972,15 +1073,18 @@ async function ensurePasswordResetTable() {
 
 // CRITICAL FIX: Ensure login_attempts table exists
 async function ensureLoginAttemptsTable() {
-  if (isSupabase) {
-    if (!tableCheckCache.loginAttempts) {
-      console.warn('Supabase detected - ensureLoginAttemptsTable skipped. Make sure login_attempts exists via migration.');
-      tableCheckCache.loginAttempts = true;
-    }
+  // Use cache to avoid repeated checks and warnings
+  if (tableCheckCache.loginAttempts) {
     return;
   }
 
-  if (tableCheckCache.loginAttempts) {
+  if (isSupabase) {
+    // For Supabase, table should exist via migration - only warn once
+    // Use debug level to reduce log noise (migration should have been run)
+    if (process.env.NODE_ENV === 'development') {
+      console.debug('Supabase detected - ensureLoginAttemptsTable skipped. Make sure login_attempts exists via migration.');
+    }
+    tableCheckCache.loginAttempts = true;
     return;
   }
 
@@ -1003,9 +1107,17 @@ async function ensureLoginAttemptsTable() {
     await pool.execute(`CREATE INDEX IF NOT EXISTS idx_login_attempts_attempted_at ON login_attempts(attempted_at)`);
     tableCheckCache.loginAttempts = true;
   } catch (error) {
-    if (!error.message.includes('already exists')) {
-      console.error('Error creating login_attempts table:', error);
+    // Only log if it's not an "already exists" error and not a network error
+    const isNetworkError = error.isNetworkError || 
+      error.message?.includes('ENOTFOUND') ||
+      error.message?.includes('getaddrinfo') ||
+      error.message?.includes('fetch failed');
+    
+    if (!error.message.includes('already exists') && !isNetworkError) {
+      console.error('Error creating login_attempts table:', error.message);
     }
+    // Mark as checked even on error to avoid repeated attempts
+    tableCheckCache.loginAttempts = true;
   }
 }
 
@@ -1046,26 +1158,23 @@ async function checkAccountLockout(userId) {
     const LOCKOUT_MINUTES = 15;
 
     // Check if account is currently locked
-    // First ensure locked_until column exists (MySQL doesn't support IF NOT EXISTS in ALTER)
+    // Note: locked_until column should exist via migration - if not, migration needs to be run
+    // We gracefully handle the case where column doesn't exist yet
+    let lockoutInfo = [];
     try {
-      await pool.execute(`
-        ALTER TABLE users 
-        ADD COLUMN locked_until TIMESTAMP NULL
-      `);
+      [lockoutInfo] = await pool.execute(
+        `SELECT locked_until FROM users WHERE id = ? AND locked_until > NOW()`,
+        [userId]
+      );
     } catch (error) {
-      // Column might already exist, ignore duplicate column errors
-      if (!error.message.includes('Duplicate column name') &&
-        !error.message.includes('already exists') &&
-        error.code !== 'ER_DUP_FIELDNAME' && error.code !== '42701' && !error.message?.includes('already exists')) {
-        // Only log if it's not a duplicate column error
-        console.error('Error adding locked_until column:', error);
+      // If column doesn't exist, assume account is not locked
+      // This is expected if migration hasn't been run yet
+      if (error.message?.includes('column') && error.message?.includes('does not exist')) {
+        console.warn('locked_until column not found. Run migration: backend/scripts/create-login-attempts-and-locked-until.js');
+      } else {
+        console.error('Error checking account lockout status:', error);
       }
     }
-
-    const [lockoutInfo] = await pool.execute(
-      `SELECT locked_until FROM users WHERE id = ? AND locked_until > NOW()`,
-      [userId]
-    );
 
     if (lockoutInfo.length > 0 && lockoutInfo[0].locked_until) {
       const lockedUntil = new Date(lockoutInfo[0].locked_until);
@@ -1106,29 +1215,25 @@ async function checkAccountLockout(userId) {
 // CRITICAL FIX: Lock account
 async function lockAccount(userId, lockoutMinutes) {
   try {
-    // Ensure locked_until column exists (MySQL doesn't support IF NOT EXISTS in ALTER)
-    try {
-      await pool.execute(`
-        ALTER TABLE users 
-        ADD COLUMN locked_until TIMESTAMP NULL
-      `);
-    } catch (error) {
-      // Column might already exist, ignore duplicate column errors
-      if (!error.message.includes('Duplicate column name') &&
-        !error.message.includes('already exists') &&
-        error.code !== 'ER_DUP_FIELDNAME' && error.code !== '42701' && !error.message?.includes('already exists')) {
-        // Only log if it's not a duplicate column error
-        console.error('Error adding locked_until column:', error);
-      }
-    }
-
+    // Note: locked_until column should exist via migration - if not, migration needs to be run
+    // We gracefully handle the case where column doesn't exist yet
     const lockedUntil = new Date();
     lockedUntil.setMinutes(lockedUntil.getMinutes() + lockoutMinutes);
 
-    await pool.execute(
-      'UPDATE users SET locked_until = ? WHERE id = ?',
-      [lockedUntil, userId]
-    );
+    try {
+      await pool.execute(
+        'UPDATE users SET locked_until = ? WHERE id = ?',
+        [lockedUntil, userId]
+      );
+    } catch (error) {
+      // If column doesn't exist, log warning but don't break login flow
+      if (error.message?.includes('column') && error.message?.includes('does not exist')) {
+        console.warn('locked_until column not found. Run migration: backend/scripts/create-login-attempts-and-locked-until.js');
+      } else {
+        console.error('Error locking account:', error);
+      }
+      // Don't throw - locking failure shouldn't break login flow
+    }
   } catch (error) {
     console.error('Error locking account:', error);
     // Don't throw - locking failure shouldn't break login flow
