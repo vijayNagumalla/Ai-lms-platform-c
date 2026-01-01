@@ -9,10 +9,27 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Create logs directory if it doesn't exist
-const logsDir = path.join(__dirname, '../logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
+// VERCEL/SERVERLESS FIX: Detect serverless environment
+// Vercel and other serverless platforms have read-only filesystems
+const isServerless = process.env.VERCEL === '1' || 
+                     process.env.AWS_LAMBDA_FUNCTION_NAME || 
+                     process.env.FUNCTION_NAME ||
+                     __dirname.includes('/var/task') ||
+                     process.cwd().includes('/var/task');
+
+// Create logs directory if it doesn't exist (only in non-serverless environments)
+let logsDir = null;
+if (!isServerless) {
+  logsDir = path.join(__dirname, '../logs');
+  try {
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+  } catch (error) {
+    // If we can't create logs directory, fall back to console-only logging
+    console.warn('Could not create logs directory, using console-only logging:', error.message);
+    logsDir = null;
+  }
 }
 
 // Define log format
@@ -37,11 +54,14 @@ const consoleFormat = winston.format.combine(
 );
 
 // Create logger instance
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
-  format: logFormat,
-  defaultMeta: { service: 'lms-platform' },
-  transports: [
+// VERCEL/SERVERLESS FIX: Only use file transports if logs directory is available
+const transports = [];
+const exceptionHandlers = [];
+const rejectionHandlers = [];
+
+// Add file transports only if logs directory is available (not in serverless)
+if (logsDir) {
+  transports.push(
     // Write all logs to combined.log
     new winston.transports.File({
       filename: path.join(logsDir, 'combined.log'),
@@ -57,34 +77,47 @@ const logger = winston.createLogger({
       maxFiles: 5,
       tailable: true
     })
-  ],
-  // Handle exceptions and rejections
-  exceptionHandlers: [
+  );
+  
+  exceptionHandlers.push(
     new winston.transports.File({
       filename: path.join(logsDir, 'exceptions.log'),
       maxsize: 10485760, // 10MB
       maxFiles: 5
     })
-  ],
-  rejectionHandlers: [
+  );
+  
+  rejectionHandlers.push(
     new winston.transports.File({
       filename: path.join(logsDir, 'rejections.log'),
       maxsize: 10485760, // 10MB
       maxFiles: 5
     })
-  ]
+  );
+}
+
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+  format: logFormat,
+  defaultMeta: { service: 'lms-platform' },
+  transports: transports,
+  exceptionHandlers: exceptionHandlers.length > 0 ? exceptionHandlers : undefined,
+  rejectionHandlers: rejectionHandlers.length > 0 ? rejectionHandlers : undefined
 });
 
-// Add console transport for non-production environments
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: consoleFormat
-  }));
-} else {
-  // In production, only log warnings and errors to console
+// VERCEL/SERVERLESS FIX: Always add console transport
+// In serverless environments, console is the only way to see logs
+// In production, log warnings and errors; in development, log everything
+if (isServerless || process.env.NODE_ENV === 'production') {
+  // In serverless/production, only log warnings and errors to console
   logger.add(new winston.transports.Console({
     format: consoleFormat,
     level: 'warn'
+  }));
+} else {
+  // In development, log everything to console
+  logger.add(new winston.transports.Console({
+    format: consoleFormat
   }));
 }
 
