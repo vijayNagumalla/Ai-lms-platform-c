@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "setup": "node setup.js",
-    "vercel-build": "npm install --prefix backend && vite build",
+    "vercel-build": "vite build",
     "backend": "cd backend && npm start",
     "backend:dev": "cd backend && npm run dev"
   },
