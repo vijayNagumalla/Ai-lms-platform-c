@@ -7,17 +7,33 @@ import logger from '../utils/logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Detect serverless/Vercel environment
+const isServerless = process.env.VERCEL === '1' || 
+                     process.env.AWS_LAMBDA_FUNCTION_NAME || 
+                     process.env.FUNCTION_NAME ||
+                     (typeof __dirname !== 'undefined' && __dirname.includes('/var/task')) ||
+                     (typeof process !== 'undefined' && process.cwd().includes('/var/task'));
+
 // Load .env file from backend directory (where this file is located)
+// In serverless environments (Vercel), environment variables come from dashboard settings, not .env files
 const envPath = join(__dirname, '..', '.env');
 const envResult = dotenv.config({ path: envPath });
 
 // Log .env file loading status
+// In serverless environments, missing .env file is expected and normal
 if (envResult.error) {
-  logger.debug(`⚠️  Could not load .env file from ${envPath}`);
-  logger.debug(`   Error: ${envResult.error.message}`);
-  logger.debug('   Make sure .env file exists in the backend directory');
+  if (!isServerless) {
+    // Only log warning in non-serverless environments where .env file is expected
+    logger.debug(`⚠️  Could not load .env file from ${envPath}`);
+    logger.debug(`   Error: ${envResult.error.message}`);
+    logger.debug('   Make sure .env file exists in the backend directory');
+  }
+  // In serverless environments, silently continue - env vars come from Vercel dashboard
 } else {
-  logger.debug(`✅ Loaded .env file from ${envPath}`);
+  if (!isServerless) {
+    // Only log success in non-serverless environments
+    logger.debug(`✅ Loaded .env file from ${envPath}`);
+  }
 }
 
 // Supabase configuration
@@ -26,7 +42,11 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABAS
 const supabaseDbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
 
 if (!supabaseUrl || !supabaseKey) {
-  logger.error('Missing Supabase configuration. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env file');
+  if (isServerless) {
+    logger.error('Missing Supabase configuration. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Vercel dashboard → Settings → Environment Variables');
+  } else {
+    logger.error('Missing Supabase configuration. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env file');
+  }
   // VERCEL FIX: Don't exit process in serverless environment - let it fail gracefully
   // process.exit(1) kills the serverless function and causes 500 errors
   // Instead, we'll handle missing config in the query function
