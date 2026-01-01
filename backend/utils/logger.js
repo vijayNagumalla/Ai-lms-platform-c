@@ -1,35 +1,48 @@
 // LOW PRIORITY FIX: Structured logging with Winston
 // Replaces console.log/error/warn with proper structured logging
+// VERCEL FIX: Entire module wrapped to prevent any errors during import
 
 import winston from 'winston';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// VERCEL FIX: Wrap entire initialization in try-catch to prevent import errors
+let __filename, __dirname, isServerless, logsDir;
 
-// VERCEL/SERVERLESS FIX: Detect serverless environment
-// Vercel and other serverless platforms have read-only filesystems
-const isServerless = process.env.VERCEL === '1' || 
-                     process.env.AWS_LAMBDA_FUNCTION_NAME || 
-                     process.env.FUNCTION_NAME ||
-                     __dirname.includes('/var/task') ||
-                     process.cwd().includes('/var/task');
+try {
+  __filename = fileURLToPath(import.meta.url);
+  __dirname = path.dirname(__filename);
+  
+  // VERCEL/SERVERLESS FIX: Detect serverless environment
+  // Vercel and other serverless platforms have read-only filesystems
+  isServerless = process.env.VERCEL === '1' || 
+                 process.env.AWS_LAMBDA_FUNCTION_NAME || 
+                 process.env.FUNCTION_NAME ||
+                 (typeof __dirname !== 'undefined' && __dirname.includes('/var/task')) ||
+                 (typeof process !== 'undefined' && process.cwd().includes('/var/task'));
 
-// Create logs directory if it doesn't exist (only in non-serverless environments)
-let logsDir = null;
-if (!isServerless) {
-  logsDir = path.join(__dirname, '../logs');
-  try {
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
+  // Create logs directory if it doesn't exist (only in non-serverless environments)
+  // VERCEL FIX: Never throw errors - always fall back to console-only logging
+  logsDir = null;
+  if (!isServerless && __dirname) {
+    try {
+      const potentialLogsDir = path.join(__dirname, '../logs');
+      // Only try to create if we can check existence first
+      if (!fs.existsSync(potentialLogsDir)) {
+        fs.mkdirSync(potentialLogsDir, { recursive: true });
+      }
+      logsDir = potentialLogsDir;
+    } catch (error) {
+      // Silently fail - use console-only logging
+      logsDir = null;
     }
-  } catch (error) {
-    // If we can't create logs directory, fall back to console-only logging
-    console.warn('Could not create logs directory, using console-only logging:', error.message);
-    logsDir = null;
   }
+} catch (error) {
+  // If ANY error occurs during initialization, use safe defaults
+  // Never throw - this would break route imports
+  isServerless = true; // Assume serverless if we can't determine
+  logsDir = null;
 }
 
 // Define log format
