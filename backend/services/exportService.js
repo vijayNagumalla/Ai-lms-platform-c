@@ -12,7 +12,20 @@ const __dirname = path.dirname(__filename);
 
 class ExportService {
     constructor() {
-        this.exportDir = path.join(__dirname, '../temp/exports');
+        // VERCEL/SERVERLESS FIX: Detect serverless environment
+        const isServerless = process.env.VERCEL === '1' || 
+                           process.env.AWS_LAMBDA_FUNCTION_NAME || 
+                           process.env.FUNCTION_NAME ||
+                           __dirname.includes('/var/task') ||
+                           process.cwd().includes('/var/task');
+        
+        // In serverless, use /tmp which is writable
+        if (isServerless) {
+            this.exportDir = '/tmp/exports';
+        } else {
+            this.exportDir = path.join(__dirname, '../temp/exports');
+        }
+        
         // MEDIUM FIX: Use configurable values from appConfig
         this.MAX_EXPORT_RECORDS = appConfig.export.maxRecords;
         this.MAX_EXPORT_FILE_SIZE = appConfig.export.maxFileSize;
@@ -21,8 +34,14 @@ class ExportService {
     }
 
     ensureExportDirectory() {
-        if (!fs.existsSync(this.exportDir)) {
-            fs.mkdirSync(this.exportDir, { recursive: true });
+        try {
+            if (!fs.existsSync(this.exportDir)) {
+                fs.mkdirSync(this.exportDir, { recursive: true });
+            }
+        } catch (error) {
+            // In serverless, /tmp should be writable, but handle gracefully
+            console.warn('Could not create export directory:', error.message);
+            // Export functionality may be limited in this environment
         }
     }
 
