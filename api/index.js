@@ -332,6 +332,36 @@ app.use('*', (req, res) => {
 // Export handler for Vercel serverless functions
 export default async (req, res) => {
   try {
+    // VERCEL FIX: Handle path correctly for Vercel rewrites
+    // When Vercel rewrites /api/* to /api/index.js, the path might be in req.url
+    // We need to ensure Express receives the correct path with /api prefix
+    
+    // Get the original URL - Vercel provides this in req.url
+    let requestPath = req.url || req.path || '/';
+    
+    // Remove query string if present
+    if (requestPath.includes('?')) {
+      requestPath = requestPath.split('?')[0];
+    }
+    
+    // Vercel rewrite rule: /api/(.*) -> /api/index.js
+    // The path that reaches us might be missing /api prefix or might have it
+    // Check if path starts with /api, if not, add it
+    if (!requestPath.startsWith('/api')) {
+      // Path doesn't have /api, but our routes expect it
+      // This shouldn't happen with Vercel rewrites, but handle it anyway
+      requestPath = '/api' + (requestPath.startsWith('/') ? requestPath : '/' + requestPath);
+    }
+    
+    // Ensure req.path and req.url are set correctly for Express
+    req.path = requestPath;
+    req.url = requestPath + (req.url?.includes('?') ? '?' + req.url.split('?')[1] : '');
+    
+    // Log for debugging
+    if (process.env.NODE_ENV === 'development' || process.env.LOG_LEVEL === 'debug') {
+      console.log('[Vercel Handler] Processed path:', req.path, 'Original req.url:', req.url);
+    }
+    
     // Ensure routes are loaded before handling request
     if (!routesLoaded) {
       await loadRoutes();
@@ -354,6 +384,7 @@ export default async (req, res) => {
     // Catch any unhandled errors and return proper JSON response
     console.error('Unhandled error in serverless function:', error);
     console.error('Error stack:', error.stack);
+    console.error('Request URL:', req.url, 'Request path:', req.path);
     
     // Make sure we haven't already sent a response
     if (!res.headersSent) {
