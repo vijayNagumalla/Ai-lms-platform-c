@@ -23,6 +23,11 @@ const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
 
 const app = express();
 
+// VERCEL FIX: Enable trust proxy for Vercel serverless functions
+// This is required for express-rate-limit to correctly identify client IPs
+// Vercel uses X-Forwarded-For headers, so we need to trust the proxy
+app.set('trust proxy', true);
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
