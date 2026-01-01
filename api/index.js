@@ -263,6 +263,8 @@ async function loadRoutes() {
     app.use('/api/super-admin', superAdminRoutes.default);
     app.use('/api/batches', batchRoutes.default);
     
+    console.log('[Routes] All routes loaded successfully');
+    console.log('[Routes] Analytics route mounted at /api/analytics');
     routesLoaded = true;
   } catch (error) {
     console.error('Critical error loading routes:', error);
