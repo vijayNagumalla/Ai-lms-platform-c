@@ -26,7 +26,9 @@ const app = express();
 // VERCEL FIX: Enable trust proxy for Vercel serverless functions
 // This is required for express-rate-limit to correctly identify client IPs
 // Vercel uses X-Forwarded-For headers, so we need to trust the proxy
-app.set('trust proxy', true);
+// Use 1 instead of true to trust only the first proxy (Vercel's edge)
+// This prevents the express-rate-limit validation error about permissive trust proxy
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
@@ -101,7 +103,8 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    return req.path === '/health' || req.path === '/api/health';
+    // Skip rate limiting for health check and OPTIONS requests (preflight)
+    return req.path === '/health' || req.path === '/api/health' || req.method === 'OPTIONS';
   }
 });
 

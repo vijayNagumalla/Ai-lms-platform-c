@@ -66,6 +66,16 @@ if (process.env.NODE_ENV === 'production' && !process.env.ENCRYPTION_KEY) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// VERCEL/PROXY FIX: Enable trust proxy when behind a reverse proxy
+// This is required for express-rate-limit to correctly identify client IPs
+// Use 1 to trust only the first proxy (most common setup: nginx, load balancer, or Vercel edge)
+// Set TRUST_PROXY env var to enable, or it will auto-detect in production
+if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1' || 
+    (process.env.NODE_ENV === 'production' && process.env.TRUST_PROXY !== 'false')) {
+  app.set('trust proxy', 1);
+  logger.info('Trust proxy enabled (trusting first proxy only)');
+}
+
 // Security middleware (CRITICAL SECURITY FIX)
 // Build connectSrc array from environment variables
 const frontendUrls = process.env.FRONTEND_URL 
