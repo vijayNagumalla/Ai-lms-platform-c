@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "installCommand": "npm install --ignore-scripts --legacy-peer-deps --no-optional && npm install --ignore-scripts --legacy-peer-deps --no-optional --prefix backend",
+  "installCommand": "npm install --ignore-scripts --legacy-peer-deps && npm install --ignore-scripts --legacy-peer-deps --prefix backend",
   "buildCommand": "npm run vercel-build",
   "outputDirectory": "dist",
   "rewrites": [
