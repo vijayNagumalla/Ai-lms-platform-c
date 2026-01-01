@@ -13,10 +13,17 @@ export function ThemeProvider({
   ...props
 }) {
   const [theme, setTheme] = useState(
-    () => localStorage.getItem(storageKey) || defaultTheme
+    () => {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return localStorage.getItem(storageKey) || defaultTheme;
+      }
+      return defaultTheme;
+    }
   );
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
 
@@ -35,7 +42,9 @@ export function ThemeProvider({
   const value = {
     theme,
     setTheme: (newTheme) => {
-      localStorage.setItem(storageKey, newTheme);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem(storageKey, newTheme);
+      }
       setTheme(newTheme);
     },
   };
@@ -53,4 +62,3 @@ export const useTheme = () => {
     throw new Error('useTheme must be used within a ThemeProvider');
   return context;
 };
-  
